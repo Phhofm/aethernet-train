@@ -777,13 +777,16 @@ def aether_large(scale: int, **kwargs) -> aether:
 # ------------------- Deployment Utilities ------------------- #
 
 def export_onnx(
-    model: nn.Module,
+    model,  # Remove type annotation to avoid import issues
     scale: int,
     precision: str = 'fp32',
 ):
     """
     Exports the AetherNet model to the ONNX format with optimizations.
     """
+    import torch  # Import inside function to ensure availability
+    from torch import nn  # Import inside function
+    
     model.eval()
     if hasattr(model, 'fuse_model'):
         model.fuse_model()
@@ -800,19 +803,14 @@ def export_onnx(
             model = model.half()
         dummy_input = dummy_input.half()
     
-    # --- START OF THE FINAL, CORRECT FIX ---
-    
-    elif precision == 'int8':
-        # This is the most robust, version-agnostic way to check if a model is quantized.
-        # It checks if any module in the model comes from the 'torch.ao.nn.quantized'
-        # namespace, which is true for all properly converted quantized models.
+    if precision == 'int8':
+        # Check if model is truly quantized
         is_truly_quantized = any(
-            m.__class__.__module__.startswith('torch.ao.nn.quantized') for m in model.modules()
+            m.__class__.__module__.startswith('torch.ao.nn.quantized') 
+            for m in model.modules()
         )
         if not is_truly_quantized:
-             raise ValueError("To export to INT8, the model must be a fully converted quantized model (from torch.ao.quantization.convert).")
-             
-    # --- END OF THE FINAL, CORRECT FIX ---
+            raise ValueError("To export to INT8, the model must be a fully converted quantized model.")
 
     onnx_filename = f"aether_net_x{scale}_{precision}.onnx"
     print(f"Exporting model to {onnx_filename}...")

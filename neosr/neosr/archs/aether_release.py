@@ -209,27 +209,32 @@ def main():
         model_for_conversion = deepcopy(base_model).cpu().eval()
         int8_model = torch.ao.quantization.convert(model_for_conversion, inplace=False)
         
-        # ===== START OF ADDED VERIFICATION STEP =====
+        # ===== START OF UPDATED SAFETY CHECK =====
         print("  - Verifying quantization parameters...")
         for name, module in int8_model.named_modules():
             if hasattr(module, 'weight_fake_quant'):
                 if hasattr(module.weight_fake_quant, 'scale'):
-                    scale = module.weight_fake_quant.scale
-                    if isinstance(scale, torch.Tensor) and scale.numel() > 1:
-                        print(f"    ⚠️ Per-channel quantization detected in {name} - forcing to per-tensor")
-                        # Convert per-channel to per-tensor
-                        module.weight_fake_quant.scale = scale.mean()
-                        module.weight_fake_quant.zero_point = module.weight_fake_quant.zero_point.mean()
-            # Also check for Conv2d layers that might have quantization parameters
-            elif isinstance(module, nn.Conv2d) and hasattr(module, 'weight_fake_quant'):
-                if hasattr(module.weight_fake_quant, 'scale'):
-                    scale = module.weight_fake_quant.scale
-                    if isinstance(scale, torch.Tensor) and scale.numel() > 1:
-                        print(f"    ⚠️ Per-channel quantization detected in {name} - forcing to per-tensor")
-                        module.weight_fake_quant.scale = scale.mean()
-                        module.weight_fake_quant.zero_point = module.weight_fake_quant.zero_point.mean()
-        print("  - ✅ Quantization parameters verified")
-        # ===== END OF ADDED VERIFICATION STEP =====
+                    scale_tensor = module.weight_fake_quant.scale
+                    zero_point_tensor = module.weight_fake_quant.zero_point
+                    
+                    # Check if we need to convert per-channel to per-tensor
+                    if isinstance(scale_tensor, torch.Tensor) and scale_tensor.numel() > 1:
+                        print(f"    ⚠️ Per-channel quantization detected in {name} - converting to per-tensor")
+                        
+                        # Convert scale to float before mean calculation
+                        new_scale = scale_tensor.float().mean()
+                        module.weight_fake_quant.scale = new_scale
+                        
+                        # Convert zero_point to float before mean calculation
+                        if isinstance(zero_point_tensor, torch.Tensor):
+                            new_zero_point = zero_point_tensor.float().mean().round().clamp(-128, 127)
+                            # Convert back to original dtype
+                            if zero_point_tensor.dtype in [torch.qint8, torch.int8]:
+                                new_zero_point = new_zero_point.to(torch.int8)
+                            else:
+                                new_zero_point = new_zero_point.to(zero_point_tensor.dtype)
+                            module.weight_fake_quant.zero_point = new_zero_point
+        # ===== END OF UPDATED SAFETY CHECK =====
         
         int8_model_path = output_dir / f"{model_path.stem}_int8_converted.pth"
         torch.save(int8_model.state_dict(), int8_model_path)
