@@ -571,6 +571,19 @@ class aether(nn.Module):
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, total_blocks)]
         self.fusion_convs = nn.ModuleList()
 
+        # Robustly calculate output channels for each fusion conv to handle non-divisible cases
+        base_ch = embed_dim // self.num_stages
+        remainder = embed_dim % self.num_stages
+        fusion_out_channels = []
+        for i in range(self.num_stages):
+            if i < remainder:
+                fusion_out_channels.append(base_ch + 1)
+            else:
+                fusion_out_channels.append(base_ch)
+        
+        # This ensures sum(fusion_out_channels) == embed_dim
+        assert sum(fusion_out_channels) == embed_dim, "Channel distribution logic is flawed."
+
         block_idx = 0
         for i, depth in enumerate(depths):
             stage_blocks = []
@@ -583,7 +596,8 @@ class aether(nn.Module):
                     norm_layer=norm_layer, res_scale=res_scale))
             self.stages.append(nn.Sequential(*stage_blocks))
             block_idx += depth
-            self.fusion_convs.append(nn.Conv2d(embed_dim, embed_dim // self.num_stages, 1))
+            # Use the pre-calculated channel count for this fusion convolution
+            self.fusion_convs.append(nn.Conv2d(embed_dim, fusion_out_channels[i], 1))
 
         self.quant_fusion_layer = QuantFusion(embed_dim, embed_dim)
         self.norm = norm_layer(embed_dim)
@@ -697,7 +711,12 @@ class aether(nn.Module):
         print("Converted to a fully quantized INT8 model.")
         return quantized_model
 
-# ------------------- Recommended Configurations ------------------- #
+# ------------------- Network Options ------------------- #
+
+def aether_tiny(scale: int, **kwargs) -> aether:
+    """A minimal and extremely fast version of AetherNet for real-time or mobile use."""
+    return aether(embed_dim=64, depths=(3, 3, 3), scale=scale,
+                  use_channel_attn=False, use_spatial_attn=False, **kwargs)
 
 def aether_small(scale: int, **kwargs) -> aether:
     """A small and fast version of AetherNet."""
