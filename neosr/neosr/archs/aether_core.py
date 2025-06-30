@@ -764,11 +764,12 @@ def export_onnx(
         dummy_input = dummy_input.half()
     
     elif precision == 'int8':
-        # A robust, safe check for a quantized model.
-        # It checks if the 'is_quantized' flag we set in the release script exists and is True.
-        if not getattr(model, 'is_quantized', False):
-             raise ValueError("To export to INT8, the model must be a converted QAT model and have the 'is_quantized' flag set.")
-
+        # The definitive check for a converted quantized model is to see if it
+        # contains any modules from the torch.ao.nn.quantized namespace.
+        is_truly_quantized = any(isinstance(m, torch.ao.nn.quantized.modules.QuantizedModule) for m in model.modules())
+        if not is_truly_quantized:
+             raise ValueError("To export to INT8, the model must be a fully converted quantized model (from torch.ao.quantization.convert).")
+         
     onnx_filename = f"aether_net_x{scale}_{precision}.onnx"
     print(f"Exporting model to {onnx_filename}...")
 

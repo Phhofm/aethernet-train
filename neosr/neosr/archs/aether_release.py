@@ -1,5 +1,7 @@
 # --- File: aether_release.py ---
 
+# python3 aether_release.py --model-path /home/phhofm/Documents/GitHub/aethernet-train/neosr/experiments/2xaether_tiny_qat_try/models/net_g_3000.pth --output-dir /home/phhofm/Documents/GitHub/aethernet-train/neosr/experiments/2xaether_tiny_qat_try/models/release --validation-dir /home/phhofm/Documents/datasets/bhi_small/BHI100/x2 --arch aether_tiny
+
 import argparse
 import os
 import torch
@@ -15,6 +17,7 @@ warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", message=".*Converting a tensor to a Python boolean.*")
 MAX_RETRIES = 3
 
+# --- Helper functions ---
 def load_image(image_path: Path) -> torch.Tensor:
     img = Image.open(image_path).convert('RGB')
     img_np = np.array(img, dtype=np.float32) / 255.0
@@ -124,7 +127,7 @@ def main():
         return
     print(f"  - ✅ Loaded sanitized weights into QAT-prepared [{args.arch}] architecture.")
     print(f"    - Info: Ignored {len(incompatible_keys.missing_keys)} keys that were sanitized for version compatibility.")
-
+    
     print("\n[2/4] Converting and validating PyTorch models...")
     print("\n> Processing: FP32 PyTorch (.pth)")
     fp32_model_path = output_dir / f"{model_path.stem}_fp32_fused.pth"
@@ -151,21 +154,22 @@ def main():
     else:
         print("  - 🟡 Skipping FP16 conversion because FP32 model creation failed.")
 
-    print("\n> Processing: INT8 PyTorch (.pth)")
-    int8_model_for_save = None
+    print("\n> Processing: INT8 PyTorch (.pth) and preparing for ONNX")
+    int8_model = None
     try:
-        print("  - Attempting INT8 PTH conversion...")
+        print("  - Attempting INT8 conversion...")
         model_for_conversion = deepcopy(base_model).cpu().eval()
-        int8_model_for_save = torch.ao.quantization.convert(model_for_conversion, inplace=False)
+        int8_model = torch.ao.quantization.convert(model_for_conversion, inplace=False)
         int8_model_path = output_dir / f"{model_path.stem}_int8_converted.pth"
-        torch.save(int8_model_for_save.state_dict(), int8_model_path)
+        torch.save(int8_model.state_dict(), int8_model_path)
         print(f"  - ✅ INT8 PTH model created successfully.")
         print(f"  - ✅ Saved to: {int8_model_path}")
     except Exception as e:
         print(f"  - ❌ Failed to create a valid INT8 PTH model: {e}")
-
+        
     print("\n[3/4] Exporting and validating ONNX models...")
     os.chdir(output_dir)
+
     if fp32_model:
         print("\n> Processing: FP32 ONNX")
         attempt_conversion(lambda: export_onnx(fp32_model.cpu(), scale, precision='fp32'), lambda path: validate_onnx_model(path, validation_sample, scale), "FP32 ONNX model exported and validated.", "Failed to create a valid FP32 ONNX model.")
@@ -176,21 +180,18 @@ def main():
         attempt_conversion(lambda: export_onnx(fp16_model, scale, precision='fp16'), lambda path: validate_onnx_model(path, validation_sample, scale), "FP16 ONNX model exported and validated.", "Failed to create a valid FP16 ONNX model.")
     else:
         print("\n> Skipping FP16 ONNX: FP16 PyTorch model not available.")
-        
-    # Use the QAT-prepared `base_model` directly for ONNX export, not the converted one.
-    # The ONNX exporter will handle the conversion from FakeQuant to Q/DQ nodes.
-    if base_model:
+
+    # For INT8 ONNX, we must use the successfully CONVERTED int8_model.
+    if int8_model:
         print("\n> Processing: INT8 ONNX")
-        # Ensure the model passed to the exporter has the required flag
-        base_model.is_quantized = True
         attempt_conversion(
-            lambda: export_onnx(base_model.cpu(), scale, precision='int8'),
+            lambda: export_onnx(int8_model.cpu(), scale, precision='int8'),
             lambda path: validate_onnx_model(path, validation_sample, scale),
             "INT8 ONNX model exported and validated.",
             "Failed to create a valid INT8 ONNX model."
         )
     else:
-        print("\n> Skipping INT8 ONNX: Base QAT model not available.")
+        print("\n> Skipping INT8 ONNX: INT8 PyTorch model could not be created.")
         
     print("\n[4/4] --- Script finished ---")
 
