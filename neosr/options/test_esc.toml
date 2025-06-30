@@ -1,0 +1,24 @@
+# Results will be saved to neosr/experiments/results/
+
+name = "test_esc"
+model_type = "image"
+scale = 4
+#use_amp = true
+#compile = true
+
+[datasets.test_1]
+name = "val_1"
+type = "single"
+dataroot_lq = 'C:\datasets\val\'
+[val]
+#tile = 200
+
+[network_g]
+type = "esc"
+#type = "esc_light"
+#type = "esc_large"
+#deployment = true
+#do_compile = true
+
+[path]
+pretrain_network_g = 'C:\model.pth'

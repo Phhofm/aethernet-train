@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+.ruff_cache/
+.mypy_cache/
+experiments/*
+options/tmp/
+neosr/metrics/topiq_fr_weights.pth
+neosr/losses/dists_weights.pth
+check.sh
