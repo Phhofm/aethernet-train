@@ -667,30 +667,38 @@ class aether(nn.Module):
     def prepare_qat(self):
         """Prepares the model for Quantization-Aware Training (QAT)."""
         if any(isinstance(m, LayerNorm2d) for m in self.modules()):
-            print("Warning: QAT is enabled with LayerNorm, which is not typically quantized. "
-                  "Performance gains from quantization may be limited.")
+            print("Warning: QAT is enabled with LayerNorm, which is not typically quantized.")
 
-         # --- START OF THE ULTIMATE FIX ---
-        # Create a maximally compatible QAT configuration by trying the newest,
-        # stable, and legacy APIs in order.
-
+        # --- START OF THE ULTIMATE WORKAROUND ---
+        # Create a QAT configuration that forces per-tensor quantization for weights.
+        # This is the definitive workaround for the bug in some PyTorch versions where
+        # torch.ao.quantization.convert cannot handle per-channel quantization
+        # for depthwise convolutions, leading to the "Tensor cannot be converted to Scalar" error.
+        print("INFO: Creating a custom QAT configuration with PER-TENSOR weight quantization for maximum compatibility.")
+        
         try:
-            # 1. Try the newest API (PyTorch 2.7+): a direct object
-            self.qconfig = tq.default_qat_qconfig_v2
-            print("Using modern (direct object) QAT configuration (PyTorch 2.7+).")
+            # Get the default FakeQuantize module from the modern API (PyTorch 2.0+)
+            # This will be used for activations.
+            activation_fake_quant = tq.default_qat_qconfig_v2.activation
+            # Get the base module for weights.
+            weight_fake_quant_base = tq.default_qat_qconfig_v2.weight
+            
+            # This is the key: We override the weight observer to use per-tensor scaling.
+            weight_fake_quant = weight_fake_quant_base.with_args(
+                observer=MovingAverageMinMaxObserver.with_args(qscheme=torch.per_tensor_affine)
+            )
+            
+            self.qconfig = tq.QConfig(
+                activation=activation_fake_quant, 
+                weight=weight_fake_quant
+            )
+            print("Using modern (custom per-tensor) QAT configuration.")
+        
         except AttributeError:
-            try:
-                # 2. Try the stable API (PyTorch ~2.0-2.6): a function
-                self.qconfig = tq.get_default_qat_qconfig_v2("fbgemm")
-                print("Using modern (v2 function) QAT configuration (PyTorch ~2.0-2.6).")
-            except AttributeError:
-                try:
-                    # 3. Fall back to the legacy API (PyTorch < 2.0)
-                    self.qconfig = tq.get_default_qat_qconfig("fbgemm")
-                    print("Warning: Using legacy QAT configuration (PyTorch < 2.0).")
-                except AttributeError:
-                    raise RuntimeError("Could not find a valid default QAT configuration in your PyTorch version.")
-        # --- END OF THE ULTIMATE FIX ---
+            # Fallback for very old versions, just in case.
+            print("Warning: Using legacy QAT configuration. This may not be as accurate.")
+            self.qconfig = tq.get_default_qat_qconfig("fbgemm")
+        # --- END OF THE ULTIMATE WORKAROUND ---
 
         print("Preparing model for Quantization-Aware Training...")
 
@@ -703,7 +711,6 @@ class aether(nn.Module):
             if hasattr(module, 'is_quantized'):
                 module.is_quantized = True
 
-        # Disable quantization on sensitive layers to preserve model quality
         layers_to_float = ['conv_first', 'conv_last', 'conv_before_upsample.0']
         for name, module in self.named_modules():
             if name in layers_to_float:
