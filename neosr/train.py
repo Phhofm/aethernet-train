@@ -241,6 +241,25 @@ def train_pipeline(root_path: str) -> None:
 
     # create model
     model = build_model(opt)
+    
+    # <<< START OF CUSTOM QAT INTEGRATION >>>
+    # Check the config for our custom 'enable_qat' flag
+    if opt.get('train', {}).get('enable_qat', False):
+        # Using tc.light_cyan as confirmed from misc.py
+        logger.info(f"{tc.light_cyan}Quantization-Aware Training (QAT) is enabled in config.{tc.end}")
+        # The actual network is in model.net_g. We need to check if it has the prepare_qat method.
+        if hasattr(model, 'net_g') and hasattr(model.net_g, 'prepare_qat'):
+            logger.info(f"{tc.light_cyan}Calling model.net_g.prepare_qat() to prepare the model for QAT...{tc.end}")
+            try:
+                # Call your custom preparation method
+                model.net_g.prepare_qat()
+                logger.info(f"{tc.light_cyan}Model successfully prepared for QAT.{tc.end}")
+            except Exception as e:
+                logger.error(f"{tc.red}Failed to prepare model for QAT: {e}{tc.end}")
+                sys.exit(1)
+        else:
+            logger.warning(f"{tc.yellow}QAT enabled in config, but the model architecture has no 'prepare_qat' method.{tc.end}")
+    # <<< END OF CUSTOM QAT INTEGRATION >>>
 
     if resume_state:  # resume training
         # handle optimizers and schedulers

@@ -33,7 +33,31 @@ class image(base):
         super().__init__(opt)
 
         # define network net_g
-        self.net_g = build_network(opt["network_g"])
+        # --- START of Quality-of-Life modification for 'scale' parameter ---
+        # Make a mutable copy of the network options to avoid altering the original config dict
+        network_g_opt = opt["network_g"].copy()
+
+        # If 'scale' is not defined in the network's specific options...
+        if "scale" not in network_g_opt:
+            # ...check if it exists at the top level of the configuration.
+            if "scale" in opt:
+                # Get the root logger to inform the user of this automatic action
+                logger = get_root_logger()
+                logger.info(
+                    f"Automatically passing top-level 'scale' ({opt['scale']}) to the network architecture."
+                )
+                # Add the scale to the network's options, so build_network receives it
+                network_g_opt["scale"] = opt["scale"]
+            else:
+                # If scale is nowhere to be found, the network will likely fail, so we should warn the user.
+                logger = get_root_logger()
+                logger.warning(
+                    "'scale' not found in [network_g] or top-level options. The network might fail to initialize if it requires 'scale'."
+                )
+
+        # Define the generator network using the (potentially modified) options
+        self.net_g = build_network(network_g_opt)
+        # --- END of Quality-of-Life modification ---
         self.net_g = self.model_to_device(self.net_g)  # type: ignore[reportArgumentType,reportArgumentType,arg-type]
         if self.opt["path"].get("print_network", False) is True:
             self.print_network(self.net_g)
