@@ -37,7 +37,6 @@ type = "calculate_topiq"
 type = "aether_medium"
 
 [train]
-ema = 0.999
 enable_qat = true
 
 [train.optim_g]
