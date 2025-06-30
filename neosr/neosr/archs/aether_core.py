@@ -757,24 +757,16 @@ class aether(nn.Module):
         if not self.is_quantized:
             raise RuntimeError("Model must be prepared with prepare_qat() first")
 
+        print("Converting QAT model to a true INT8 model...")
         self.eval()
+        
+        # prepare_qat() already configured correct quantization
         quantized_model = tq.convert(self, inplace=False)
+        
+        # Set flag for ONNX exporter
         quantized_model.is_quantized = True
         
-        # Verify no per-channel quantization remains
-        print("Verifying quantization parameters...")
-        for name, module in quantized_model.named_modules():
-            if hasattr(module, 'weight_fake_quant'):
-                scale = module.weight_fake_quant.scale
-                if isinstance(scale, torch.Tensor) and scale.numel() > 1:
-                    print(f"  ⚠️ Per-channel quantization detected in {name}")
-                    # Convert to per-tensor
-                    module.weight_fake_quant.scale = scale.mean()
-                    zp = module.weight_fake_quant.zero_point
-                    if isinstance(zp, torch.Tensor):
-                        module.weight_fake_quant.zero_point = zp.mean().round().clamp(-128, 127)
-        
-        print("Converted to fully quantized INT8 model")
+        print("Conversion to INT8 model complete.")
         return quantized_model
 
 # ------------------- Network Presets ------------------- #
