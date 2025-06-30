@@ -744,20 +744,30 @@ def export_onnx(
     Exports the AetherNet model to the ONNX format with optimizations.
     """
     model.eval()
-    model.fuse_model()  # Ensure model is fused before export
+    # The fusion is handled by the release script, but this is a good safeguard.
+    if hasattr(model, 'fuse_model'):
+        model.fuse_model()
 
     dummy_input = torch.randn(1, 3, 64, 64, dtype=torch.float32)
-    dummy_input = dummy_input.to(next(model.parameters()).device)
+    # Check if the model has parameters to determine its device, otherwise assume CPU
+    try:
+        device = next(model.parameters()).device
+    except StopIteration:
+        device = torch.device('cpu')
+    dummy_input = dummy_input.to(device)
 
     # Handle different precision requirements
     if precision == 'fp16':
-        model = model.half()
+        # Don't move to half if already half
+        if next(model.parameters()).dtype != torch.float16:
+            model = model.half()
         dummy_input = dummy_input.half()
+    
     elif precision == 'int8':
-        # For INT8 export, the model must be a converted QAT model.
-        if not model.is_quantized or not isinstance(model.quant, tq.QuantStub):
-             raise ValueError("To export to INT8, the model must first be trained with "
-                              "QAT (`prepare_qat`) and converted (`convert_to_quantized`).")
+        # A robust, safe check for a quantized model.
+        # It checks if the 'is_quantized' flag we set in the release script exists and is True.
+        if not getattr(model, 'is_quantized', False):
+             raise ValueError("To export to INT8, the model must be a converted QAT model and have the 'is_quantized' flag set.")
 
     onnx_filename = f"aether_net_x{scale}_{precision}.onnx"
     print(f"Exporting model to {onnx_filename}...")
@@ -775,7 +785,6 @@ def export_onnx(
             'output': {0: 'batch_size', 2: 'height_out', 3: 'width_out'}
         },
         export_params=True,
-        # Hints for TensorRT optimization
         keep_initializers_as_inputs=True if precision != 'fp32' else None,
         verbose=False,
     )

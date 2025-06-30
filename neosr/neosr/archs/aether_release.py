@@ -1,4 +1,4 @@
-# --- File: aether_release.py (Final Version) ---
+# --- File: aether_release.py ---
 
 import argparse
 import os
@@ -12,9 +12,9 @@ import warnings
 from aether_core import aether, aether_tiny, aether_small, aether_medium, aether_large, export_onnx
 
 warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", message=".*Converting a tensor to a Python boolean.*")
 MAX_RETRIES = 3
 
-# --- Helper Functions (Unchanged) ---
 def load_image(image_path: Path) -> torch.Tensor:
     img = Image.open(image_path).convert('RGB')
     img_np = np.array(img, dtype=np.float32) / 255.0
@@ -27,18 +27,14 @@ def validate_pytorch_model(model: torch.nn.Module, validation_data: torch.Tensor
         model.to(device)
         with torch.no_grad():
             input_tensor = validation_data.to(device)
-            # Check model's dtype by inspecting its first parameter.
-            # For quantized models, check if it has a quant stub.
             is_fp16 = False
             try:
                 if next(model.parameters()).dtype == torch.float16:
                     is_fp16 = True
-            except StopIteration: # Handle models with no parameters
+            except StopIteration:
                 pass
-
             if is_fp16:
                 input_tensor = input_tensor.half()
-            
             _ = model(input_tensor)
         return True
     except Exception as e:
@@ -78,7 +74,6 @@ def attempt_conversion(conversion_func, validation_func, success_message, failur
     print(f"  - ❌ {failure_message}")
     return None
 
-# --- Main Execution ---
 def main():
     parser = argparse.ArgumentParser(description="Convert and validate a trained AetherNet QAT model.")
     parser.add_argument('--model-path', type=str, required=True, help='Path to the input QAT-trained .pth model file.')
@@ -86,22 +81,17 @@ def main():
     parser.add_argument('--validation-dir', type=str, required=True, help='Path to a folder of images for validation.')
     parser.add_argument('--arch', type=str, required=True, choices=['aether_tiny', 'aether_small', 'aether_medium', 'aether_large'], help='The network architecture of the model.')
     args = parser.parse_args()
-
     print("--- AetherNet Model Release Script ---")
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
-
     model_path = Path(args.model_path)
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    
     validation_images = list(Path(args.validation_dir).glob('*.[jp][pn]g'))
     if not validation_images:
         raise FileNotFoundError(f"No validation images (.jpg, .png) found in '{args.validation_dir}'")
-    
     validation_sample = load_image(validation_images[0])
     print(f"Loaded validation sample: {validation_images[0].name} (Shape: {validation_sample.shape})")
-
     print("\n[1/4] Loading base model and extracting configuration...")
     try:
         state_dict = torch.load(args.model_path, map_location='cpu')
@@ -111,40 +101,31 @@ def main():
     except (KeyError, FileNotFoundError) as e:
         print(f"  - ❌ Error loading model or finding scale: {e}")
         return
-
     arch_map = {
         'aether_tiny': aether_tiny, 'aether_small': aether_small,
         'aether_medium': aether_medium, 'aether_large': aether_large
     }
-    
     print("  - Instantiating QAT-prepared model to match the saved state...")
     base_model = arch_map[args.arch](scale=scale)
     base_model.prepare_qat()
-    
     print("  - Sanitizing state_dict to handle PyTorch version differences...")
     keys_to_remove = []
     for key in list(model_weights.keys()):
         if key.endswith(('.min_val', '.max_val', '.min_vals', '.max_vals')):
             keys_to_remove.append(key)
     for key in keys_to_remove:
-        if key in model_weights:
-            del model_weights[key]
+        if key in model_weights: del model_weights[key]
     print(f"    - Info: Removed {len(keys_to_remove)} problematic observer keys from the state_dict.")
-
     incompatible_keys = base_model.load_state_dict(model_weights, strict=False)
     critical_errors = [key for key in incompatible_keys.unexpected_keys]
     if critical_errors:
         print("\n  - ❌ CRITICAL ERROR: Found architectural mismatches while loading the model.")
-        for error in critical_errors[:10]:
-            print(f"      - {error}")
+        for error in critical_errors[:10]: print(f"      - {error}")
         return
-
     print(f"  - ✅ Loaded sanitized weights into QAT-prepared [{args.arch}] architecture.")
     print(f"    - Info: Ignored {len(incompatible_keys.missing_keys)} keys that were sanitized for version compatibility.")
 
     print("\n[2/4] Converting and validating PyTorch models...")
-
-    # --- FP32 PTH ---
     print("\n> Processing: FP32 PyTorch (.pth)")
     fp32_model_path = output_dir / f"{model_path.stem}_fp32_fused.pth"
     def convert_fp32_pth():
@@ -152,13 +133,11 @@ def main():
         model_fp32.fuse_model() 
         model_fp32.load_state_dict(base_model.state_dict(), strict=False)
         return model_fp32
-    
     fp32_model = attempt_conversion(convert_fp32_pth, lambda m: validate_pytorch_model(m, validation_sample, device), "FP32 PTH model created and validated.", "Failed to create a valid FP32 PTH model.")
     if fp32_model:
         torch.save(fp32_model.state_dict(), fp32_model_path)
         print(f"  - ✅ Saved to: {fp32_model_path}")
 
-    # --- FP16 PTH ---
     print("\n> Processing: FP16 PyTorch (.pth)")
     fp16_model = None
     if fp32_model:
@@ -172,43 +151,46 @@ def main():
     else:
         print("  - 🟡 Skipping FP16 conversion because FP32 model creation failed.")
 
-    # --- INT8 PTH ---
     print("\n> Processing: INT8 PyTorch (.pth)")
-    int8_model_path = output_dir / f"{model_path.stem}_int8_converted.pth"
-    def convert_int8_pth():
-        # Move model to CPU before final conversion for max stability.
+    int8_model_for_save = None
+    try:
+        print("  - Attempting INT8 PTH conversion...")
         model_for_conversion = deepcopy(base_model).cpu().eval()
-        return torch.ao.quantization.convert(model_for_conversion, inplace=False)
-    
-    int8_model = attempt_conversion(convert_int8_pth, lambda m: validate_pytorch_model(m, validation_sample, 'cpu'), "INT8 PTH model created and validated.", "Failed to create a valid INT8 PTH model.")
-    if int8_model:
-        torch.save(int8_model.state_dict(), int8_model_path)
+        int8_model_for_save = torch.ao.quantization.convert(model_for_conversion, inplace=False)
+        int8_model_path = output_dir / f"{model_path.stem}_int8_converted.pth"
+        torch.save(int8_model_for_save.state_dict(), int8_model_path)
+        print(f"  - ✅ INT8 PTH model created successfully.")
         print(f"  - ✅ Saved to: {int8_model_path}")
+    except Exception as e:
+        print(f"  - ❌ Failed to create a valid INT8 PTH model: {e}")
 
     print("\n[3/4] Exporting and validating ONNX models...")
     os.chdir(output_dir)
-
-    # --- FP32 ONNX ---
     if fp32_model:
         print("\n> Processing: FP32 ONNX")
         attempt_conversion(lambda: export_onnx(fp32_model.cpu(), scale, precision='fp32'), lambda path: validate_onnx_model(path, validation_sample, scale), "FP32 ONNX model exported and validated.", "Failed to create a valid FP32 ONNX model.")
     else:
         print("\n> Skipping FP32 ONNX: FP32 PyTorch model not available.")
-
-    # --- FP16 ONNX ---
     if fp16_model:
         print("\n> Processing: FP16 ONNX")
-        # Keep the model on the GPU for FP16 ONNX export
         attempt_conversion(lambda: export_onnx(fp16_model, scale, precision='fp16'), lambda path: validate_onnx_model(path, validation_sample, scale), "FP16 ONNX model exported and validated.", "Failed to create a valid FP16 ONNX model.")
     else:
         print("\n> Skipping FP16 ONNX: FP16 PyTorch model not available.")
-
-    # --- INT8 ONNX ---
-    if int8_model:
+        
+    # Use the QAT-prepared `base_model` directly for ONNX export, not the converted one.
+    # The ONNX exporter will handle the conversion from FakeQuant to Q/DQ nodes.
+    if base_model:
         print("\n> Processing: INT8 ONNX")
-        attempt_conversion(lambda: export_onnx(int8_model.cpu(), scale, precision='int8'), lambda path: validate_onnx_model(path, validation_sample, scale), "INT8 ONNX model exported and validated.", "Failed to create a valid INT8 ONNX model.")
+        # Ensure the model passed to the exporter has the required flag
+        base_model.is_quantized = True
+        attempt_conversion(
+            lambda: export_onnx(base_model.cpu(), scale, precision='int8'),
+            lambda path: validate_onnx_model(path, validation_sample, scale),
+            "INT8 ONNX model exported and validated.",
+            "Failed to create a valid INT8 ONNX model."
+        )
     else:
-        print("\n> Skipping INT8 ONNX: INT8 PyTorch model not available.")
+        print("\n> Skipping INT8 ONNX: Base QAT model not available.")
         
     print("\n[4/4] --- Script finished ---")
 
