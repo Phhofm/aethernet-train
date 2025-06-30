@@ -167,26 +167,15 @@ def calculate_ssim(
 
 @METRIC_REGISTRY.register()
 def calculate_dists(
+    model,  # <-- ADDED
     img: np.ndarray | Tensor,
     img2: np.ndarray | Tensor,
-    **kwargs,  # noqa: ARG001
+    **kwargs,
 ) -> float:
-    """Calculates DISTS metric.
-
-    Args:
-    ----
-        img (np.ndarray): Images with range [0, 255] with order 'HWC'.
-        img2 (np.ndarray): Images with range [0, 255] with order 'HWC'.
-
-    Returns:
-    -------
-        float: SSIM result.
-
-    """
+    """Calculates DISTS metric using a pre-initialized model."""
     assert img.shape == img2.shape, (
         f"Image shapes are different: {img.shape}, {img2.shape}."
     )
-
     # satisfy mypy
     img, img2 = cast("Tensor", img2tensor([img, img2]))
     # normalize to [0, 1]
@@ -197,33 +186,21 @@ def calculate_dists(
         # to cuda
         device = torch.device("cuda")
         img, img2 = img.to(device), img2.to(device)
-
-    loss = dists_loss(as_loss=False)  # type: ignore[reportCallIssue]
-    return loss.forward(img, img2)
+        
+    return model.forward(img, img2).item()
 
 
 @METRIC_REGISTRY.register()
 def calculate_topiq(
+    model,  # <-- ADDED
     img: np.ndarray | Tensor,
     img2: np.ndarray | Tensor,
-    **kwargs,  # noqa: ARG001
+    **kwargs,
 ) -> float:
-    """Calculates TOPIQ metric.
-
-    Args:
-    ----
-        img (np.ndarray): Images with range [0, 255] with order 'HWC'.
-        img2 (np.ndarray): Images with range [0, 255] with order 'HWC'.
-
-    Returns:
-    -------
-        float: SSIM result.
-
-    """
+    """Calculates TOPIQ metric using a pre-initialized model."""
     assert img.shape == img2.shape, (
         f"Image shapes are different: {img.shape}, {img2.shape}."
     )
-
     # satisfy mypy
     img, img2 = cast("Tensor", img2tensor([img, img2]))
     # normalize to [0, 1]
@@ -235,5 +212,4 @@ def calculate_topiq(
         device = torch.device("cuda")
         img, img2 = img.to(device), img2.to(device)
 
-    loss = topiq()  # type: ignore[reportCallIssue]
-    return loss.forward(img, img2)
+    return model.forward(img, img2).item()
