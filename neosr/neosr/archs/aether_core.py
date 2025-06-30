@@ -665,59 +665,81 @@ class aether(nn.Module):
         print("Fusion complete.")
 
     def prepare_qat(self):
-        """Prepares the model for Quantization-Aware Training (QAT)."""
-        if any(isinstance(m, LayerNorm2d) for m in self.modules()):
-            print("Warning: QAT is enabled with LayerNorm, which is not typically quantized.")
+            """Prepares the model for Quantization-Aware Training (QAT)."""
+            if any(isinstance(m, LayerNorm2d) for m in self.modules()):
+                print("Warning: QAT is enabled with LayerNorm, which is not typically quantized.")
 
-        # --- START OF THE ULTIMATE WORKAROUND ---
-        # Create a QAT configuration that forces per-tensor quantization for weights.
-        # This is the definitive workaround for the bug in some PyTorch versions where
-        # torch.ao.quantization.convert cannot handle per-channel quantization
-        # for depthwise convolutions, leading to the "Tensor cannot be converted to Scalar" error.
-        print("INFO: Creating a custom QAT configuration with PER-TENSOR weight quantization for maximum compatibility.")
-        
-        try:
-            # Get the default FakeQuantize module from the modern API (PyTorch 2.0+)
-            # This will be used for activations.
-            activation_fake_quant = tq.default_qat_qconfig_v2.activation
-            # Get the base module for weights.
-            weight_fake_quant_base = tq.default_qat_qconfig_v2.weight
+            # --- START OF THE ULTIMATE WORKAROUND ---
+            print("INFO: Creating a custom QAT configuration with PER-TENSOR weight quantization for maximum compatibility.")
             
-            # This is the key: We override the weight observer to use per-tensor scaling.
-            weight_fake_quant = weight_fake_quant_base.with_args(
-                observer=MovingAverageMinMaxObserver.with_args(qscheme=torch.per_tensor_affine)
-            )
+            try:
+                # Modern PyTorch (2.6+): Use QConfigMapping API
+                from torch.ao.quantization import get_default_qat_qconfig_mapping
+                qconfig_mapping = get_default_qat_qconfig_mapping()
+                
+                # Create a new per-tensor QConfig
+                from torch.ao.quantization import default_fake_quant, default_per_tensor_weight_fake_quant
+                per_tensor_qconfig = tq.QConfig(
+                    activation=default_fake_quant,
+                    weight=default_per_tensor_weight_fake_quant
+                )
+                qconfig_mapping = qconfig_mapping.set_global(per_tensor_qconfig)
+                self.qconfig = per_tensor_qconfig
+                print("Using modern per-tensor QAT configuration (QConfigMapping).")
+            except (ImportError, AttributeError):
+                # Fallback for PyTorch 2.5.1
+                print("Warning: Using PyTorch 2.5.1 compatible QAT configuration.")
+                
+                # Create a safe per-tensor observer
+                per_tensor_observer = MovingAverageMinMaxObserver.with_args(
+                    qscheme=torch.per_tensor_affine,
+                    reduce_range=False
+                )
+                
+                # Create custom FakeQuantize classes
+                class SafePerTensorFakeQuantize(tq.FakeQuantize):
+                    def __init__(self, *args, **kwargs):
+                        kwargs['observer'] = per_tensor_observer
+                        kwargs['quant_min'] = 0
+                        kwargs['quant_max'] = 255
+                        super().__init__(*args, **kwargs)
+                        
+                class SafePerTensorWeightFakeQuantize(tq.FakeQuantize):
+                    def __init__(self, *args, **kwargs):
+                        kwargs['observer'] = per_tensor_observer
+                        kwargs['quant_min'] = -128
+                        kwargs['quant_max'] = 127
+                        kwargs['dtype'] = torch.qint8
+                        super().__init__(*args, **kwargs)
+                
+                self.qconfig = tq.QConfig(
+                    activation=SafePerTensorFakeQuantize,
+                    weight=SafePerTensorWeightFakeQuantize
+                )
+                print("Using custom per-tensor QAT configuration for PyTorch 2.5.1")
+            # --- END OF THE ULTIMATE WORKAROUND ---
+
+            print("Preparing model for Quantization-Aware Training...")
+            # Move these calls INSIDE the method
+            self.train()
+            self.fuse_model()
             
-            self.qconfig = tq.QConfig(
-                activation=activation_fake_quant, 
-                weight=weight_fake_quant
-            )
-            print("Using modern (custom per-tensor) QAT configuration.")
-        
-        except AttributeError:
-            # Fallback for very old versions, just in case.
-            print("Warning: Using legacy QAT configuration. This may not be as accurate.")
-            self.qconfig = tq.get_default_qat_qconfig("fbgemm")
-        # --- END OF THE ULTIMATE WORKAROUND ---
+            # Apply QAT preparation
+            tq.prepare_qat(self, inplace=True)
 
-        print("Preparing model for Quantization-Aware Training...")
+            self.is_quantized = True
+            for module in self.modules():
+                if hasattr(module, 'is_quantized'):
+                    module.is_quantized = True
 
-        self.train()
-        self.fuse_model()
-        tq.prepare_qat(self, inplace=True)
+            # Disable quantization for sensitive layers
+            layers_to_float = ['conv_first', 'conv_last', 'conv_before_upsample.0']
+            for name, module in self.named_modules():
+                if name in layers_to_float:
+                    module.qconfig = None
+                    print(f"  - Disabled quantization for sensitive layer: {name}")
 
-        self.is_quantized = True
-        for module in self.modules():
-            if hasattr(module, 'is_quantized'):
-                module.is_quantized = True
-
-        layers_to_float = ['conv_first', 'conv_last', 'conv_before_upsample.0']
-        for name, module in self.named_modules():
-            if name in layers_to_float:
-                module.qconfig = None
-                print(f"  - Disabled quantization for sensitive layer: {name}")
-
-        print("AetherNet prepared for QAT.")
+            print("AetherNet prepared for QAT.")
 
     def convert_to_quantized(self) -> nn.Module:
         """Converts a QAT-trained model to a true integer-based quantized model."""

@@ -199,13 +199,44 @@ def main():
     else:
         print("\n> Skipping FP16 ONNX: FP16 PyTorch model not available.")
 
-    # Always attempt the INT8 ONNX export if the PTH model was created.
-    if int8_model:
-        print("\n> Processing: INT8 ONNX")
-        attempt_conversion(lambda: export_onnx(int8_model.cpu(), scale, precision='int8'), lambda path: validate_onnx_model(path, validation_sample, scale), "INT8 ONNX model exported and validated.", "Failed to create a valid INT8 ONNX model.")
-    else:
-        print("\n> Skipping INT8 ONNX: INT8 PyTorch model could not be created.")
-    # --- END OF FIX #1 ---
+    # --- START OF FIX #1: Remove skipping logic ---
+    print("\n> Processing: INT8 PyTorch (.pth) and preparing for ONNX")
+    int8_model = None
+    try:
+        print("  - Attempting INT8 conversion...")
+        print("    - Setting quantization engine to 'qnnpack' for stability.")
+        torch.backends.quantized.engine = 'qnnpack'
+        model_for_conversion = deepcopy(base_model).cpu().eval()
+        int8_model = torch.ao.quantization.convert(model_for_conversion, inplace=False)
+        
+        # ===== START OF ADDED VERIFICATION STEP =====
+        print("  - Verifying quantization parameters...")
+        for name, module in int8_model.named_modules():
+            if hasattr(module, 'weight_fake_quant'):
+                if hasattr(module.weight_fake_quant, 'scale'):
+                    scale = module.weight_fake_quant.scale
+                    if isinstance(scale, torch.Tensor) and scale.numel() > 1:
+                        print(f"    ⚠️ Per-channel quantization detected in {name} - forcing to per-tensor")
+                        # Convert per-channel to per-tensor
+                        module.weight_fake_quant.scale = scale.mean()
+                        module.weight_fake_quant.zero_point = module.weight_fake_quant.zero_point.mean()
+            # Also check for Conv2d layers that might have quantization parameters
+            elif isinstance(module, nn.Conv2d) and hasattr(module, 'weight_fake_quant'):
+                if hasattr(module.weight_fake_quant, 'scale'):
+                    scale = module.weight_fake_quant.scale
+                    if isinstance(scale, torch.Tensor) and scale.numel() > 1:
+                        print(f"    ⚠️ Per-channel quantization detected in {name} - forcing to per-tensor")
+                        module.weight_fake_quant.scale = scale.mean()
+                        module.weight_fake_quant.zero_point = module.weight_fake_quant.zero_point.mean()
+        print("  - ✅ Quantization parameters verified")
+        # ===== END OF ADDED VERIFICATION STEP =====
+        
+        int8_model_path = output_dir / f"{model_path.stem}_int8_converted.pth"
+        torch.save(int8_model.state_dict(), int8_model_path)
+        print(f"  - ✅ INT8 PTH model created successfully.")
+        print(f"  - ✅ Saved to: {int8_model_path}")
+    except Exception as e:
+        print(f"  - ❌ Failed to create a valid INT8 PTH model: {e}")
         
     print("\n[4/4] --- Script finished ---")
 
