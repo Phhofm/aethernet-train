@@ -670,15 +670,27 @@ class aether(nn.Module):
             print("Warning: QAT is enabled with LayerNorm, which is not typically quantized. "
                   "Performance gains from quantization may be limited.")
 
+         # --- START OF THE ULTIMATE FIX ---
+        # Create a maximally compatible QAT configuration by trying the newest,
+        # stable, and legacy APIs in order.
+
         try:
-            # Try to use the modern, recommended v2 API first
-            self.qconfig = tq.get_default_qat_qconfig_v2("fbgemm")
-            print("Using modern (v2) QAT configuration.")
+            # 1. Try the newest API (PyTorch 2.7+): a direct object
+            self.qconfig = tq.default_qat_qconfig_v2
+            print("Using modern (direct object) QAT configuration (PyTorch 2.7+).")
         except AttributeError:
-            # If it fails (e.g., on an old/nightly PyTorch build), fall back to the v1 API
-            print("Warning: `get_default_qat_qconfig_v2` not found. Falling back to the older `get_default_qat_qconfig`.")
-            print("         This is common on older PyTorch versions and should work correctly.")
-            self.qconfig = tq.get_default_qat_qconfig("fbgemm")
+            try:
+                # 2. Try the stable API (PyTorch ~2.0-2.6): a function
+                self.qconfig = tq.get_default_qat_qconfig_v2("fbgemm")
+                print("Using modern (v2 function) QAT configuration (PyTorch ~2.0-2.6).")
+            except AttributeError:
+                try:
+                    # 3. Fall back to the legacy API (PyTorch < 2.0)
+                    self.qconfig = tq.get_default_qat_qconfig("fbgemm")
+                    print("Warning: Using legacy QAT configuration (PyTorch < 2.0).")
+                except AttributeError:
+                    raise RuntimeError("Could not find a valid default QAT configuration in your PyTorch version.")
+        # --- END OF THE ULTIMATE FIX ---
 
         print("Preparing model for Quantization-Aware Training...")
 
@@ -744,32 +756,35 @@ def export_onnx(
     Exports the AetherNet model to the ONNX format with optimizations.
     """
     model.eval()
-    # The fusion is handled by the release script, but this is a good safeguard.
     if hasattr(model, 'fuse_model'):
         model.fuse_model()
 
     dummy_input = torch.randn(1, 3, 64, 64, dtype=torch.float32)
-    # Check if the model has parameters to determine its device, otherwise assume CPU
     try:
         device = next(model.parameters()).device
     except StopIteration:
         device = torch.device('cpu')
     dummy_input = dummy_input.to(device)
 
-    # Handle different precision requirements
     if precision == 'fp16':
-        # Don't move to half if already half
         if next(model.parameters()).dtype != torch.float16:
             model = model.half()
         dummy_input = dummy_input.half()
     
+    # --- START OF THE FINAL, CORRECT FIX ---
+    
     elif precision == 'int8':
-        # The definitive check for a converted quantized model is to see if it
-        # contains any modules from the torch.ao.nn.quantized namespace.
-        is_truly_quantized = any(isinstance(m, torch.ao.nn.quantized.modules.QuantizedModule) for m in model.modules())
+        # This is the most robust, version-agnostic way to check if a model is quantized.
+        # It checks if any module in the model comes from the 'torch.ao.nn.quantized'
+        # namespace, which is true for all properly converted quantized models.
+        is_truly_quantized = any(
+            m.__class__.__module__.startswith('torch.ao.nn.quantized') for m in model.modules()
+        )
         if not is_truly_quantized:
              raise ValueError("To export to INT8, the model must be a fully converted quantized model (from torch.ao.quantization.convert).")
-         
+             
+    # --- END OF THE FINAL, CORRECT FIX ---
+
     onnx_filename = f"aether_net_x{scale}_{precision}.onnx"
     print(f"Exporting model to {onnx_filename}...")
 
