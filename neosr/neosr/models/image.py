@@ -33,11 +33,10 @@ class image(base):
         super().__init__(opt)
 
         # define network net_g
-        # --- START of Quality-of-Life modification for 'scale' parameter ---
+        # smartly handle scale parameter so it is not redundantly in network options but only top scale config scale
         # Make a mutable copy of the network options to avoid altering the original config dict
         network_g_opt = opt["network_g"].copy()
 
-        # If 'scale' is not defined in the network's specific options...
         if "scale" not in network_g_opt:
             # ...check if it exists at the top level of the configuration.
             if "scale" in opt:
@@ -61,6 +60,21 @@ class image(base):
         self.net_g = self.model_to_device(self.net_g)  # type: ignore[reportArgumentType,reportArgumentType,arg-type]
         if self.opt["path"].get("print_network", False) is True:
             self.print_network(self.net_g)
+
+        # custom qat integration
+        if self.opt.get('train', {}).get('enable_qat', False):
+            logger = get_root_logger()
+            logger.info(f"{tc.light_cyan}Quantization-Aware Training (QAT) is enabled in config.{tc.end}")
+            if hasattr(self.net_g, 'prepare_qat'):
+                logger.info(f"{tc.light_cyan}Calling model.net_g.prepare_qat() to prepare the model for QAT...{tc.end}")
+                try:
+                    self.net_g.prepare_qat()
+                    logger.info(f"{tc.light_cyan}Model successfully prepared for QAT.{tc.end}")
+                except Exception as e:
+                    logger.error(f"{tc.red}Failed to prepare model for QAT: {e}{tc.end}")
+                    sys.exit(1)
+            else:
+                logger.warning(f"{tc.yellow}QAT enabled in config, but the model architecture has no 'prepare_qat' method.{tc.end}")
 
         # define network net_d
         self.net_d = self.opt.get("network_d", None)
@@ -101,21 +115,30 @@ class image(base):
         # initialize logger
         logger = get_root_logger()
 
-        # set EMA
+        # set EMA, but disable it if QAT is active due to incompatibility
         self.ema = self.opt["train"].get("ema", -1)
+        # Check if QAT is enabled in the training options
+        is_qat_enabled = self.opt.get('train', {}).get('enable_qat', False)
+
         if self.ema > 0:
-            logger.info("Using exponential-moving average.")
-            self.net_g_ema = AveragedModel(
-                self.net_g,  # type: ignore[reportArgumentType,arg-type]
-                multi_avg_fn=get_ema_multi_avg_fn(self.ema),
-                device=self.device,
-            )
-            if self.net_d is not None:
-                self.net_d_ema = AveragedModel(
-                    self.net_d,  # type: ignore[reportArgumentType,arg-type]
+            if is_qat_enabled:
+                logger.warning(
+                    f"{tc.light_yellow}QAT is enabled. Disabling EMA as they are currently incompatible.{tc.end}"
+                )
+                self.ema = -1 # Explicitly disable EMA
+            else:
+                logger.info("Using exponential-moving average.")
+                self.net_g_ema = AveragedModel(
+                    self.net_g,  # type: ignore[reportArgumentType,arg-type]
                     multi_avg_fn=get_ema_multi_avg_fn(self.ema),
                     device=self.device,
                 )
+                if self.net_d is not None:
+                    self.net_d_ema = AveragedModel(
+                        self.net_d,  # type: ignore[reportArgumentType,arg-type]
+                        multi_avg_fn=get_ema_multi_avg_fn(self.ema),
+                        device=self.device,
+                    )
 
         # sharpness-aware minimization
         self.sam = self.opt["train"].get("sam", None)
