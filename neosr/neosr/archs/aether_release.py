@@ -1,4 +1,4 @@
-# --- File: aether_release.py (Final Version - Acknowledges Env Limitations) ---
+# --- File: aether_release.py ---
 
 # NUKE THE PIP CACHE. It forces pip to re-download fresh files.
 # pip cache purge
@@ -26,8 +26,6 @@
 # Conversion command
 # python3 aether_release.py --model-path /home/phips/Documents/GitHub/aethernet-train/neosr/experiments/2xaether_tiny_qat/models/net_g_7000.pth --output-dir /home/phips/Documents/GitHub/aethernet-train/neosr/experiments/2xaether_tiny_qat/models/release --validation-dir /home/phips/Documents/dataset/PDM/OSISRD/v3/validation/x2 --arch aether_tiny
 
-# --- File: aether_release.py (Final Polished Version) ---
-
 import argparse
 import os
 import torch
@@ -39,17 +37,14 @@ from copy import deepcopy
 import warnings
 from aether_core import aether, aether_tiny, aether_small, aether_medium, aether_large, export_onnx
 
-# --- START OF FIX #2: Suppress verbose warnings ---
 # Suppress benign PyTorch UserWarnings and ONNX TracerWarnings
 warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", message=".*Converting a tensor to a Python boolean.*")
 # Suppress benign ONNX Runtime warnings about initializers. 3 = ERROR level.
 ort.set_default_logger_severity(3)
-# --- END OF FIX #2 ---
 
 MAX_RETRIES = 3
 
-# ... (Helper functions are unchanged and correct) ...
 def load_image(image_path: Path) -> torch.Tensor:
     img = Image.open(image_path).convert('RGB')
     img_np = np.array(img, dtype=np.float32) / 255.0
@@ -126,9 +121,8 @@ def main():
     arch_map = { 'aether_tiny': aether_tiny, 'aether_small': aether_small, 'aether_medium': aether_medium, 'aether_large': aether_large }
     print("  - Instantiating QAT-prepared model to match the saved state...")
     base_model = arch_map[args.arch](scale=scale)
-    base_model.prepare_qat() # This will now correctly use the v2 API
+    base_model.prepare_qat()
     
-    # The sanitizing logic is kept as a robust measure, though it may not be needed in the new env.
     print("  - Sanitizing state_dict to handle potential version differences...")
     keys_to_remove = []
     for key in list(model_weights.keys()):
@@ -170,7 +164,6 @@ def main():
     else:
         print("  - 🟡 Skipping FP16 conversion because FP32 model creation failed.")
 
-    # --- START OF FIX #1: Remove skipping logic ---
     print("\n> Processing: INT8 PyTorch (.pth) and preparing for ONNX")
     int8_model = None
     try:
@@ -199,7 +192,6 @@ def main():
     else:
         print("\n> Skipping FP16 ONNX: FP16 PyTorch model not available.")
 
-    # --- START OF FIX #1: Remove skipping logic ---
     print("\n> Processing: INT8 PyTorch (.pth) and preparing for ONNX")
     int8_model = None
     try:
@@ -209,7 +201,6 @@ def main():
         model_for_conversion = deepcopy(base_model).cpu().eval()
         int8_model = torch.ao.quantization.convert(model_for_conversion, inplace=False)
         
-        # ===== START OF UPDATED SAFETY CHECK =====
         print("  - Verifying quantization parameters...")
         for name, module in int8_model.named_modules():
             if hasattr(module, 'weight_fake_quant'):
@@ -234,7 +225,6 @@ def main():
                             else:
                                 new_zero_point = new_zero_point.to(zero_point_tensor.dtype)
                             module.weight_fake_quant.zero_point = new_zero_point
-        # ===== END OF UPDATED SAFETY CHECK =====
         
         int8_model_path = output_dir / f"{model_path.stem}_int8_converted.pth"
         torch.save(int8_model.state_dict(), int8_model_path)
