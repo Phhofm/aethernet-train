@@ -9,7 +9,7 @@ scale = 2
 [datasets.test_1]
 name = "val_1"
 type = "single"
-dataroot_lq = '/home/phips/Documents/dataset/PDM/OSISRD/v3/validation/x2'
+dataroot_lq = '/home/phhofm/Documents/datasets/bhi_small/BHI100/x2'
 [val]
 #tile = 200
 
@@ -21,4 +21,4 @@ type = "aether_tiny"
 fused_init = true
 
 [path]
-pretrain_network_g = '/home/phips/Documents/GitHub/aethernet-train/neosr/experiments/2xaether_tiny_qat/models/release/net_g_7000_int8_converted.pth'
+pretrain_network_g = '/home/phhofm/Documents/GitHub/aethernet-train/neosr/experiments/2xaether_tiny_qat_try/models/release/aether_tiny_x2_fp32.pth'
