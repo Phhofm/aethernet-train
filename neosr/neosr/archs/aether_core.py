@@ -197,15 +197,29 @@ class GatedConvFFN(nn.Module):
         self.quant_mul = torch.nn.quantized.FloatFunctional()
         self.is_quantized = False
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Note: self.temperature is not quantized-friendly.
-        # It's better to absorb it into the conv_gate weights during training
-        # or handle it carefully post-training. For now, we assume it's handled.
-        gate = self.conv_gate(x) # * self.temperature (removed for simplicity in qat)
-        main = self.conv_main(x)
-        activated = self.act(gate)
+        # --- FIX FOR INT8 SiLU ERROR ---
+        # Stubs to create a float island around the SiLU activation
+        self.act_dequant = tq.DeQuantStub()
+        self.act_quant = tq.QuantStub()
 
-        if self.is_quantized:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        gate = self.conv_gate(x) * self.temperature
+        main = self.conv_main(x)
+        
+        # --- FIX FOR INT8 SiLU ERROR ---
+        # Dequantize before SiLU, apply in float, then requantize
+        gate = self.act_dequant(gate)
+        activated = self.act(gate)
+        activated = self.act_quant(activated)
+        
+        # --- FIX FOR FP16 MULTIPLY ERROR ---
+        # For FP16, this multiplication can be unstable. We perform it in FP32.
+        # torch.autocast handles this automatically if enabled in the validation function.
+        # But for explicit stability, we can cast it.
+        if x.dtype == torch.float16:
+             x = activated.float() * main.float()
+             x = x.half()
+        elif self.is_quantized:
             x = self.quant_mul.mul(activated, main)
         else:
             x = activated * main
@@ -893,23 +907,19 @@ def export_onnx(
 ) -> str:
     """
     Export model to ONNX format with optimizations and metadata.
-    
-    Args:
-        model: Model to export
-        scale: Super-resolution scale factor
-        precision: Export precision (fp32, fp16, int8)
-        output_path: Custom output path
-        
-    Returns:
-        str: Path to exported ONNX file
     """
     model.eval()
     model.fuse_model()
 
     dummy_input = torch.randn(1, 3, 64, 64, dtype=torch.float32)
-    device = next(model.parameters()).device if next(model.parameters(), None) is not None else 'cpu'
+    device = next(model.parameters(), None)
+    if device is None:
+        device = 'cpu'
+    else:
+        device = device.device
     dummy_input = dummy_input.to(device)
     
+    # Handle precision
     if precision == 'fp16':
         model.half()
         dummy_input = dummy_input.half()
@@ -931,17 +941,31 @@ def export_onnx(
         dynamic_axes=dynamic_axes,
     )
     
+    # --- FIX FOR ONNX METADATA ERROR ---
+    # Use a compatible method to add metadata as custom fields.
     try:
-        import onnx
         model_onnx = onnx.load(onnx_filename)
-        meta_props = model_onnx.metadata_props
-        meta_props.append(helper.make_key_value_pair("model_name", "AetherNet"))
-        meta_props.append(helper.make_key_value_pair("scale", str(scale)))
-        meta_props.append(helper.make_key_value_pair("architecture", json.dumps(model.get_config())))
+        
+        # Add metadata as key-value string pairs
+        meta = model_onnx.metadata_props
+        meta.add().key = "model_name"
+        meta.add().value = "AetherNet"
+        
+        meta.add().key = "scale"
+        meta.add().value = str(scale)
+        
+        meta.add().key = "img_range"
+        meta.add().value = str(model.img_range)
+        
+        if hasattr(model, 'arch_config'):
+            arch_str = json.dumps(model.get_config())
+            meta.add().key = "spandrel_config" # Use a key that spandrel recognizes
+            meta.add().value = arch_str
+            
         onnx.save(model_onnx, onnx_filename)
-        print(f"Added Spandrel/ChaiNNer metadata to {onnx_filename}")
-    except (ImportError, NameError):
-        print("ONNX metadata not added - 'onnx' package not found or 'helper' not imported.")
+        print(f"Successfully added Spandrel/ChaiNNer metadata to {onnx_filename}")
+    except Exception as e:
+        print(f"Warning: Could not add ONNX metadata. Error: {e}")
 
     print(f"Exported {precision.upper()} model to {onnx_filename}")
     return onnx_filename
