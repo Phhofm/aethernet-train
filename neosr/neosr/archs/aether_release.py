@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-AetherNet Model Release Script (Production-Grade)
-================================================
+AetherNet Model Release Script
+==============================
 
-Converts trained AetherNet models to optimized deployment formats with enhanced:
+Converts trained AetherNet models to optimized deployment formats with:
 - Robustness across PyTorch versions (1.10+)
 - Comprehensive error handling and validation
 - Cross-platform compatibility (Windows/Linux/macOS)
@@ -63,6 +63,7 @@ if HAS_DML:
 
 # ------------------- Setup Logging ------------------- 
 def setup_logger(output_dir: Path) -> logging.Logger:
+    """Configure logger with console and file handlers."""
     logger = logging.getLogger("AetherNetRelease")
     if logger.hasHandlers():
         logger.handlers.clear()
@@ -81,7 +82,7 @@ logger = logging.getLogger("AetherNetRelease")
 
 # ------------------- Helper Functions ------------------- 
 def load_image(image_path: Path) -> torch.Tensor:
-    """Load an image and convert to normalized tensor."""
+    """Load an image and convert to normalized tensor (CxHxW, [0,1])."""
     try:
         img = Image.open(image_path).convert('RGB')
         img_np = np.array(img, dtype=np.float32) / 255.0
@@ -94,6 +95,7 @@ def validate_pytorch_model(
     validation_data: torch.Tensor,
     device: torch.device
 ) -> bool:
+    """Validate model produces finite outputs with correct shape."""
     try:
         model.eval()
         model.to(device)
@@ -117,6 +119,7 @@ def validate_pytorch_model(
 def validate_onnx_model(
     onnx_path: Path, validation_data: torch.Tensor, scale: int
 ) -> bool:
+    """Validate ONNX model produces finite outputs with correct shape."""
     providers = ['CUDAExecutionProvider', 'DmlExecutionProvider', 'CPUExecutionProvider']
     try:
         session = ort.InferenceSession(str(onnx_path), providers=providers)
@@ -144,6 +147,7 @@ def validate_onnx_model(
         return False
 
 def attempt_operation(operation: Callable, validation: Callable[[Any], bool], success_msg: str, error_msg: str, max_retries: int = MAX_RETRIES) -> Any:
+    """Execute operation with retries and validation checks."""
     for attempt in range(1, max_retries + 1):
         try:
             logger.info(f"Attempt {attempt}/{max_retries}")
@@ -162,6 +166,7 @@ def attempt_operation(operation: Callable, validation: Callable[[Any], bool], su
 
 
 def memory_cleanup():
+    """Clear GPU memory cache if available."""
     if HAS_CUDA:
         torch.cuda.empty_cache()
 
@@ -171,12 +176,11 @@ def create_fp32_model(
     validation_sample: torch.Tensor,
     device: torch.device
 ) -> Optional[AetherNet]:
-    """Create a clean, fused FP32 model from a (potentially QAT) base model."""
+    """Create clean fused FP32 model from base model."""
     def _operation():
-        # Create a fresh model instance to ensure it's clean (not a QAT model)
+        # Create fresh model instance to ensure clean state
         model = AetherNet(**base_model.arch_config)
-        # Load the state dict with strict=False. This loads the float weights (`.weight`)
-        # and ignores the quantization parameters (`.weight_fake_quant`, etc.)
+        # Load state dict ignoring quantization parameters
         model.load_state_dict(base_model.state_dict(), strict=False)
         model.fuse_model()
         model.eval()
@@ -188,19 +192,17 @@ def create_fp32_model(
         success_msg="Created optimized FP32 model",
         error_msg="Failed to create FP32 model"
     )
+
 def create_fp16_model(
     fp32_model: AetherNet,
     validation_sample: torch.Tensor,
     device: torch.device
 ) -> Optional[AetherNet]:
-    """Convert FP32 model to FP16 with stability enhancements."""
+    """Convert FP32 model to stable FP16 format."""
     def _operation():
         model = deepcopy(fp32_model)
-        # --- FIX FOR FP16 ERROR ---
-        # Call the new, more robust stabilization method on the FP32 model
-        # BEFORE converting it to .half().
+        # Apply FP16 stabilization before conversion
         model.stabilize_for_fp16()
-        
         model = model.half()
         model.eval()
         return model
@@ -217,8 +219,9 @@ def create_int8_model(
     validation_sample: torch.Tensor,
     device: torch.device
 ) -> Optional[AetherNet]:
-    """Convert an already-prepared QAT model to a final INT8 model."""
+    """Convert QAT model to final INT8 quantized model."""
     def _operation():
+        # Select appropriate quantization backend
         backend = 'fbgemm' if platform.system() == 'Linux' else 'qnnpack'
         if backend not in torch.backends.quantized.supported_engines:
             backend = torch.backends.quantized.supported_engines[0]
@@ -226,18 +229,13 @@ def create_int8_model(
         torch.backends.quantized.engine = backend
         logger.info(f"Using quantization backend: {backend}")
         
-        # The model is already a QAT model. We just need to convert it.
-        # It's safer to do this on the CPU.
+        # Convert on CPU for stability
         model_to_convert = deepcopy(base_qat_model).cpu().eval()
-        
-        # The `convert_to_quantized` helper does the final conversion step.
         int8_model = model_to_convert.convert_to_quantized()
-        
-        logger.info("Verifying final INT8 model...")
         int8_model.verify_quantization()
         return int8_model
             
-    # For INT8, we validate on CPU as that's where conversion happens
+    # Validate on CPU where conversion happens
     cpu_device = torch.device('cpu')
     return attempt_operation(
         operation=_operation,
@@ -247,9 +245,8 @@ def create_int8_model(
     )
 
 def export_onnx_wrapper(model, scale, precision, output_path, validation_sample):
-    """Wrapper to use core export function and validate its output."""
+    """Export model to ONNX format and validate output."""
     def _operation():
-        # Use the robust export function from the core library
         export_onnx(deepcopy(model), scale, precision, str(output_path))
         return output_path
 
@@ -261,6 +258,7 @@ def export_onnx_wrapper(model, scale, precision, output_path, validation_sample)
     )
 
 def load_checkpoint(model_path: Path) -> Tuple[Dict, Dict, int, bool]:
+    """Load model checkpoint and extract architecture configuration."""
     checkpoint = torch.load(model_path, map_location='cpu')
     state_dict = checkpoint.get('params_ema', checkpoint.get('params', checkpoint.get('state_dict', checkpoint)))
     
@@ -295,7 +293,10 @@ def load_checkpoint(model_path: Path) -> Tuple[Dict, Dict, int, bool]:
 
 # ------------------- Main Execution ------------------- 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="Convert AetherNet models", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description="Convert AetherNet models to deployment formats",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
     parser.add_argument('--model-path', type=str, required=True, help='Path to trained model (.pth)')
     parser.add_argument('--output-dir', type=str, required=True, help='Output directory for converted models')
     parser.add_argument('--validation-dir', type=str, required=True, help='Directory with validation images')
@@ -313,7 +314,7 @@ if __name__ == '__main__':
     if args.verbose:
         logger.setLevel(logging.DEBUG)
 
-    logger.info("=== AetherNet Model Release Script v2.0 ===")
+    logger.info("=== AetherNet Model Release Script ===")
     logger.info(f"PyTorch: {torch.__version__}, Device: {device}, Model: {model_path.name}")
 
     # --- Phase 1: Load and Validate Checkpoint ---
@@ -337,9 +338,7 @@ if __name__ == '__main__':
 
         if is_qat_checkpoint:
             logger.info("Preparing model for QAT state dict...")
-            base_model.prepare_qat() # This correctly prepares the model structure
-
-        # For regular checkpoints, fuse if needed before loading
+            base_model.prepare_qat()
         elif any('fused_conv' in k for k in state_dict.keys()):
             logger.info("Fusing model to match non-QAT fused checkpoint.")
             base_model.fuse_model()
