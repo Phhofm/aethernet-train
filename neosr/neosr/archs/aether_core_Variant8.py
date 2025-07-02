@@ -121,14 +121,9 @@ class ReparamLargeKernelConv(nn.Module):
         self.is_quantized = False
 
         if self.fused:
-            # --- THE FIX ---
-            # Initialize directly with padding, no separate pad layer
+            self.explicit_pad = nn.ZeroPad2d(self.padding)
             self.fused_conv = nn.Conv2d(in_channels, out_channels, kernel_size, stride,
-                                        padding=self.padding, groups=groups, bias=True)
-            # self.explicit_pad is no longer needed
-            if hasattr(self, 'explicit_pad'):
-                del self.explicit_pad
-            # --- END FIX ---
+                                        padding=0, groups=groups, bias=True)
         else:
             # Training path
             self.lk_conv = nn.Conv2d(in_channels, out_channels, kernel_size, stride,
@@ -140,12 +135,9 @@ class ReparamLargeKernelConv(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if self.fused:
-            # --- THE FIX ---
-            # The forward pass is now a simple, single operation
-            return self.fused_conv(x)
-            # --- END FIX ---
+            # The padding should happen before the conv for quantization to work correctly
+            return self.fused_conv(self.explicit_pad(x))
 
-        # Training forward pass is unchanged and correct
         lk_out = self.lk_conv(x)
         sk_out = self.sk_conv(x)
         return (lk_out + self.lk_bias.view(1, -1, 1, 1) +
@@ -168,28 +160,19 @@ class ReparamLargeKernelConv(nn.Module):
             return
 
         fused_kernel, fused_bias = self._fuse_kernel()
-        
-        # --- THE FIX ---
-        # Create a single Conv2d with the padding argument included
         self.fused_conv = nn.Conv2d(self.in_channels, self.out_channels, self.kernel_size,
-                                    self.stride, padding=self.padding, groups=self.groups, bias=True)
-        # --- END FIX ---
-                                    
+                                    self.stride, padding=0, groups=self.groups, bias=True)
         self.fused_conv.weight.data = fused_kernel
         self.fused_conv.bias.data = fused_bias
+        self.explicit_pad = nn.ZeroPad2d(self.padding)
+        
+        if hasattr(self, 'qconfig') and self.qconfig is not None:
+             self.fused_conv.qconfig = self.qconfig
 
-        # Preserve quantization config
-        if self.is_quantized and hasattr(self.lk_conv, 'qconfig'):
-            self.fused_conv.qconfig = self.lk_conv.qconfig
-            
         # Cleanup
         del self.lk_conv, self.sk_conv, self.lk_bias, self.sk_bias
-        # --- THE FIX ---
-        # Delete the explicit_pad layer if it exists
-        if hasattr(self, 'explicit_pad'):
-            del self.explicit_pad
-        # --- END FIX ---
         self.fused = True
+
 
 class GatedConvFFN(nn.Module):
     """
@@ -400,19 +383,19 @@ class AetherBlock(nn.Module):
         self.spatial_attn = SpatialAttention() if use_spatial_attn else nn.Identity()
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
 
+        self.quantize_residual_flag = quantize_residual
         self.quant_add = torch.nn.quantized.FloatFunctional()
-        self.quant_mul_scalar = torch.nn.quantized.FloatFunctional()
         self.is_quantized = False
         
-        # Stubs for float islands around non-quantizable ops
+        # FIX for the `promoteTypes` error
+        self.quant_mul_scalar = torch.nn.quantized.FloatFunctional()
+        
         self.norm_dequant = tq.DeQuantStub()
         self.norm_quant = tq.QuantStub()
         
-        # --- FINAL FIX ---
-        # The residual stubs are removed from __init__. They are not needed.
-        # self.residual_quant = tq.QuantStub()
-        # self.residual_dequant = tq.DeQuantStub()
-        # --- END FIX ---
+        if quantize_residual:
+            self.residual_quant = tq.QuantStub()
+            self.residual_dequant = tq.DeQuantStub()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         shortcut = x
@@ -428,20 +411,18 @@ class AetherBlock(nn.Module):
         
         residual_unscaled = self.drop_path(x)
         
+        # FIX for the `promoteTypes` error
         if self.is_quantized:
             residual = self.quant_mul_scalar.mul_scalar(residual_unscaled, self.res_scale)
         else:
             residual = residual_unscaled * self.res_scale
 
-        # --- FINAL FIX ---
-        # The logic is now much simpler. In a quantized model, both `shortcut` and
-        # `residual` are already quantized tensors. We just add them. In a float
-        # model, we do the standard float addition.
-        if self.is_quantized:
-            return self.quant_add.add(shortcut, residual)
-        else:
-            return shortcut + residual
-        # --- END FIX ---
+        if self.is_quantized and self.quantize_residual_flag:
+            shortcut_q = self.residual_quant(shortcut)
+            output = self.quant_add.add(shortcut_q, residual)
+            return self.residual_dequant(output)
+        
+        return shortcut + residual
 
 
 class QuantFusion(nn.Module):
@@ -466,6 +447,8 @@ class QuantFusion(nn.Module):
         target_size = features[0].shape[-2:]
         aligned_features = []
         for feat in features:
+            # Use nearest neighbor for upsampling feature maps to avoid introducing
+            # new artifacts that quantization might struggle with.
             if feat.shape[-2:] != target_size:
                 aligned = F.interpolate(
                     feat, size=target_size, mode='nearest'
@@ -477,13 +460,10 @@ class QuantFusion(nn.Module):
         x = torch.cat(aligned_features, dim=1)
         fused = self.fusion_conv(x)
         
-        # --- THE FINAL FIX ---
-        # The 'fused' tensor is quantized, but 'error_comp' is a float parameter.
-        # We cannot add them in the quantized path. We bypass the addition for INT8.
-        # The FP32/FP16 models will still perform the addition correctly.
         if self.is_quantized:
-            return fused
-        
+            # error_comp should ideally be absorbed into the bias of fusion_conv
+            # before quantization for a truly clean graph.
+            return self.quant_add.add(fused, self.error_comp)
         return fused + self.error_comp
 
 
@@ -648,13 +628,8 @@ class AetherNet(nn.Module):
             block_idx += depth
             self.fusion_convs.append(nn.Conv2d(embed_dim, fusion_out_channels[i], 1))
 
-        # --- THE FINAL FIX (in __init__) ---
-        # Add the quantized functional for the main residual connection
-        self.quant_add = torch.nn.quantized.FloatFunctional()
-        # --- END FIX ---
-
         self.quant_fusion_layer = QuantFusion(embed_dim, embed_dim)
-        self.norm = norm_layer(embed_dim) # This is the problematic norm layer
+        self.norm = norm_layer(embed_dim)
         self.conv_after_body = nn.Conv2d(embed_dim, embed_dim, 3, 1, 1)
 
         self.conv_before_upsample = nn.Sequential(
@@ -666,49 +641,29 @@ class AetherNet(nn.Module):
         if not self.fused_init:
             self.apply(self._init_weights)
 
-        # Stubs for the top-level quant/dequant
         self.quant = tq.QuantStub()
         self.dequant = tq.DeQuantStub()
-
-        # --- THE FINAL FIX ---
-        # Add float island stubs for the main `self.norm` layer
-        self.body_norm_dequant = tq.DeQuantStub()
-        self.body_norm_quant = tq.QuantStub()
-        # --- END FIX ---
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x_in = x / self.img_range if self.img_range != 1.0 else x
         x_in = x_in - self.mean
         
         x = self.quant(x_in)
+
         x_first = self.conv_first(x)
 
         features = []
         out = x_first
-        for stage in self.stages:
+        for stage, fusion_conv in zip(self.stages, self.fusion_convs):
             out = stage(out)
-            features.append(self.fusion_convs[len(features)](out))
+            features.append(fusion_conv(out))
 
         fused_features = self.quant_fusion_layer(features)
         
-        body_out = self.body_norm_dequant(fused_features)
-        body_out = self.norm(body_out)
-        body_out = self.body_norm_quant(body_out)
-        
-        # --- THE FINAL FIX ---
-        # The logic for both residual additions must be handled correctly.
-        if self.is_quantized:
-            # First residual connection
-            body_out = self.quant_add.add(body_out, x_first)
-            # Second residual connection
-            body_out = self.quant_add.add(self.conv_after_body(body_out), body_out)
-        else:
-            # The original float path
-            body_out = body_out + x_first
-            body_out = self.conv_after_body(body_out) + body_out
-        # --- END FIX ---
-        
-        # The rest of the network now operates on a correctly computed tensor.
+        body_out = self.norm(fused_features)
+        body_out = body_out + x_first
+        body_out = self.conv_after_body(body_out) + body_out
+
         recon = self.conv_before_upsample(body_out)
         recon = self.upsample(recon)
         recon = self.conv_last(recon)
