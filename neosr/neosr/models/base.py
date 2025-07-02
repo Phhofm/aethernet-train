@@ -314,6 +314,11 @@ class base:
         save_dict = {}
         for net_, param_key_ in zip(net, param_key, strict=True):
             net__ = self.get_bare_model(net_)
+            
+            # Add architecture config if it exists, metadata for Aether models
+            if hasattr(net__, 'arch_config'):
+                save_dict['arch_config'] = net__.arch_config
+
             state_dict = net__.state_dict()
             new_state_dict = OrderedDict()
 
