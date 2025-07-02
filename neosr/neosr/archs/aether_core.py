@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # --- File Information ---
-# Version: 3.1.1 (Production-Ready)
+# Version: 1.0.0
 # Author: Philip Hofmann
 # License: MIT
 # GitHub: https://github.com/phhofm/aethernet
