@@ -12,6 +12,7 @@
 #   - Version-Safe Deployment
 #   - Multi-Backend Support (spandrel, chaiNNer, TRT, DML)
 
+from copy import deepcopy
 import math
 import time
 import warnings
@@ -511,15 +512,14 @@ class AetherNet(nn.Module):
         use_spatial_attn: bool = False,
         norm_type: str = 'deployment',
         res_scale: float = 0.1,
-        # Capture any additional kwargs
-        **extra_kwargs
+        **kwargs
     ):
         super().__init__()
-        # Store architecture configuration as metadata
+        # Capture ALL constructor parameters
         self.arch_config = {
             'in_chans': in_chans,
             'embed_dim': embed_dim,
-            'depths': list(depths),  # Convert to list for serialization
+            'depths': depths,
             'mlp_ratio': mlp_ratio,
             'drop': drop,
             'drop_path_rate': drop_path_rate,
@@ -533,9 +533,12 @@ class AetherNet(nn.Module):
             'use_spatial_attn': use_spatial_attn,
             'norm_type': norm_type,
             'res_scale': res_scale,
-            # Store any additional parameters
-            'extra': extra_kwargs
+            **kwargs
         }
+        
+        # Convert tuple parameters to lists for JSON serialization
+        if isinstance(self.arch_config['depths'], tuple):
+            self.arch_config['depths'] = list(self.arch_config['depths'])
         
         self.img_range = img_range
         self.register_buffer('scale_tensor', torch.tensor(scale))
@@ -749,6 +752,10 @@ class AetherNet(nn.Module):
             print("All layers quantized successfully")
         
         return len(non_quantized) == 0
+    
+    def get_config(self) -> Dict[str, Any]:
+        """Return the complete architecture configuration."""
+        return deepcopy(self.arch_config)
 
     def save_optimized(self, filename: str, precision: str = 'fp32'):
         """
