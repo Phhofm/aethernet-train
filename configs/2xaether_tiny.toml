@@ -7,19 +7,19 @@ fast_matmul = true
 
 [datasets.train]
 type = "paired"
-dataroot_gt = '/home/phhofm/Documents/datasets/bhi_small/BHI_small'
-dataroot_lq = '/home/phhofm/Documents/datasets/bhi_small/x2'
+dataroot_gt = '/home/phips/Documents/dataset/PDM/OSISRD/v3/hr'
+dataroot_lq = '/home/phips/Documents/dataset/PDM/OSISRD/v3/x2'
 patch_size = 32
 batch_size = 4
 
 [datasets.val]
 name = "val"
 type = "paired"
-dataroot_gt = '/home/phhofm/Documents/datasets/bhi_small/BHI100/HR'
-dataroot_lq = '/home/phhofm/Documents/datasets/bhi_small/BHI100/x2'
+dataroot_gt = '/home/phips/Documents/dataset/PDM/OSISRD/v3/validation/hr'
+dataroot_lq = '/home/phips/Documents/dataset/PDM/OSISRD/v3/validation/x2'
 
 [val]
-val_freq = 1000
+val_freq = 50000
 [val.metrics.psnr]
 type = "calculate_psnr"
 [val.metrics.ssim]
