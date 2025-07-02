@@ -511,6 +511,8 @@ class AetherNet(nn.Module):
         use_spatial_attn: bool = False,
         norm_type: str = 'deployment',
         res_scale: float = 0.1,
+        # Capture any additional kwargs
+        **extra_kwargs
     ):
         super().__init__()
         # Store architecture configuration as metadata
@@ -530,7 +532,9 @@ class AetherNet(nn.Module):
             'use_channel_attn': use_channel_attn,
             'use_spatial_attn': use_spatial_attn,
             'norm_type': norm_type,
-            'res_scale': res_scale
+            'res_scale': res_scale,
+            # Store any additional parameters
+            'extra': extra_kwargs
         }
         
         self.img_range = img_range
