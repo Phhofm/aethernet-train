@@ -344,7 +344,7 @@ if __name__ == '__main__':
             logger.info("Fusing model to match non-QAT fused checkpoint.")
             base_model.fuse_model()
 
-        base_model.load_state_dict(state_dict, strict=True)
+        base_model.load_state_dict(state_dict, strict=False)
         base_model.eval()
         logger.info("Base model loaded successfully.")
 

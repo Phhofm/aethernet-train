@@ -28,7 +28,7 @@ import torch.ao.quantization as tq
 from torch.ao.quantization.observer import MovingAverageMinMaxObserver, MovingAveragePerChannelMinMaxObserver
 import torch.onnx
 from packaging import version  # For version parsing
-from onnx import helper # Correctly import helper for metadata
+import onnx
 
 # Suppress quantization warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="torch.ao.quantization")
@@ -197,25 +197,30 @@ class GatedConvFFN(nn.Module):
         self.quant_mul = torch.nn.quantized.FloatFunctional()
         self.is_quantized = False
 
-        # --- FIX FOR INT8 SiLU ERROR ---
-        # Stubs to create a float island around the SiLU activation
+        # --- FIX FOR `temperature` ERROR ---
+        # Add the same functional here to handle the `temperature` multiplication
+        self.quant_mul_scalar = torch.nn.quantized.FloatFunctional()
+
         self.act_dequant = tq.DeQuantStub()
         self.act_quant = tq.QuantStub()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        gate = self.conv_gate(x) * self.temperature
+        gate_unscaled = self.conv_gate(x)
+        
+        # --- FIX FOR `temperature` ERROR ---
+        if self.is_quantized:
+            # self.temperature is a tensor, mul_scalar needs a Python float. Use .item().
+            gate = self.quant_mul_scalar.mul_scalar(gate_unscaled, self.temperature.item())
+        else:
+            # The original operation for non-quantized models
+            gate = gate_unscaled * self.temperature
+        
         main = self.conv_main(x)
         
-        # --- FIX FOR INT8 SiLU ERROR ---
-        # Dequantize before SiLU, apply in float, then requantize
         gate = self.act_dequant(gate)
         activated = self.act(gate)
         activated = self.act_quant(activated)
         
-        # --- FIX FOR FP16 MULTIPLY ERROR ---
-        # For FP16, this multiplication can be unstable. We perform it in FP32.
-        # torch.autocast handles this automatically if enabled in the validation function.
-        # But for explicit stability, we can cast it.
         if x.dtype == torch.float16:
              x = activated.float() * main.float()
              x = x.half()
@@ -367,7 +372,7 @@ class AetherBlock(nn.Module):
                  use_channel_attn: bool = True, use_spatial_attn: bool = False,
                  norm_layer: nn.Module = DeploymentNorm, res_scale: float = 0.1):
         super().__init__()
-        self.res_scale = res_scale
+        self.res_scale = res_scale # This remains a Python float
         self.conv = ReparamLargeKernelConv(
             in_channels=dim, out_channels=dim, kernel_size=lk_kernel,
             stride=1, groups=dim, small_kernel=sk_kernel, fused_init=fused_init
@@ -382,8 +387,9 @@ class AetherBlock(nn.Module):
         self.quant_add = torch.nn.quantized.FloatFunctional()
         self.is_quantized = False
         
-        # --- FIX FOR INT8 ERROR ---
-        # Stubs to create a "float island" around the custom norm layer.
+        # FIX for the `promoteTypes` error
+        self.quant_mul_scalar = torch.nn.quantized.FloatFunctional()
+        
         self.norm_dequant = tq.DeQuantStub()
         self.norm_quant = tq.QuantStub()
         
@@ -395,8 +401,6 @@ class AetherBlock(nn.Module):
         shortcut = x
         x = self.conv(x)
 
-        # --- FIX FOR INT8 ERROR ---
-        # Dequantize before norm, apply norm in float, then requantize.
         x = self.norm_dequant(x)
         x = self.norm(x)
         x = self.norm_quant(x)
@@ -404,7 +408,14 @@ class AetherBlock(nn.Module):
         x = self.ffn(x)
         x = self.channel_attn(x)
         x = self.spatial_attn(x)
-        residual = self.drop_path(x) * self.res_scale
+        
+        residual_unscaled = self.drop_path(x)
+        
+        # FIX for the `promoteTypes` error
+        if self.is_quantized:
+            residual = self.quant_mul_scalar.mul_scalar(residual_unscaled, self.res_scale)
+        else:
+            residual = residual_unscaled * self.res_scale
 
         if self.is_quantized and self.quantize_residual_flag:
             shortcut_q = self.residual_quant(shortcut)
@@ -941,26 +952,28 @@ def export_onnx(
         dynamic_axes=dynamic_axes,
     )
     
-    # --- FIX FOR ONNX METADATA ERROR ---
-    # Use a compatible method to add metadata as custom fields.
     try:
         model_onnx = onnx.load(onnx_filename)
         
-        # Add metadata as key-value string pairs
         meta = model_onnx.metadata_props
-        meta.add().key = "model_name"
-        meta.add().value = "AetherNet"
+        # Use add() to create new entries
+        new_meta = meta.add()
+        new_meta.key = "model_name"
+        new_meta.value = "AetherNet"
         
-        meta.add().key = "scale"
-        meta.add().value = str(scale)
+        new_meta = meta.add()
+        new_meta.key = "scale"
+        new_meta.value = str(scale)
         
-        meta.add().key = "img_range"
-        meta.add().value = str(model.img_range)
+        new_meta = meta.add()
+        new_meta.key = "img_range"
+        new_meta.value = str(model.img_range)
         
         if hasattr(model, 'arch_config'):
             arch_str = json.dumps(model.get_config())
-            meta.add().key = "spandrel_config" # Use a key that spandrel recognizes
-            meta.add().value = arch_str
+            new_meta = meta.add()
+            new_meta.key = "spandrel_config"
+            new_meta.value = arch_str
             
         onnx.save(model_onnx, onnx_filename)
         print(f"Successfully added Spandrel/ChaiNNer metadata to {onnx_filename}")
