@@ -211,25 +211,29 @@ class GatedConvFFN(nn.Module):
         self.conv_out = nn.Conv2d(hidden_channels, in_channels, 1)
         self.drop2 = nn.Dropout(drop)
         self.temperature = nn.Parameter(torch.ones(1))
-        self.quant_mul = torch.nn.quantized.FloatFunctional()
         self.is_quantized = False
+        self.quant_mul = torch.nn.quantized.FloatFunctional()
 
-        # --- FIX FOR `temperature` ERROR ---
-        # Add the same functional here to handle the `temperature` multiplication
-        self.quant_mul_scalar = torch.nn.quantized.FloatFunctional()
-
+        # Float island for SiLU
         self.act_dequant = tq.DeQuantStub()
         self.act_quant = tq.QuantStub()
+        
+        # --- FINAL ONNX FIX ---
+        # Float island for temperature multiplication
+        self.temp_dequant = tq.DeQuantStub()
+        self.temp_quant = tq.QuantStub()
+        # --- END FIX ---
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         gate_unscaled = self.conv_gate(x)
         
-        # --- FIX FOR `temperature` ERROR ---
+        # --- FINAL ONNX FIX ---
+        # Replace mul_scalar with a float island
         if self.is_quantized:
-            # self.temperature is a tensor, mul_scalar needs a Python float. Use .item().
-            gate = self.quant_mul_scalar.mul_scalar(gate_unscaled, self.temperature.item())
+            gate_float = self.temp_dequant(gate_unscaled)
+            gate_scaled = gate_float * self.temperature
+            gate = self.temp_quant(gate_scaled)
         else:
-            # The original operation for non-quantized models
             gate = gate_unscaled * self.temperature
         
         main = self.conv_main(x)
@@ -248,7 +252,7 @@ class GatedConvFFN(nn.Module):
 
         x = self.drop1(x)
         x = self.conv_out(x)
-        return self.drop2(x)
+        return x
 
 
 class DynamicChannelScaling(nn.Module):
@@ -404,15 +408,16 @@ class AetherBlock(nn.Module):
         self.quant_mul_scalar = torch.nn.quantized.FloatFunctional()
         self.is_quantized = False
         
-        # Stubs for float islands around non-quantizable ops
+        # Float island for DeploymentNorm
         self.norm_dequant = tq.DeQuantStub()
         self.norm_quant = tq.QuantStub()
         
-        # --- FINAL FIX ---
-        # The residual stubs are removed from __init__. They are not needed.
-        # self.residual_quant = tq.QuantStub()
-        # self.residual_dequant = tq.DeQuantStub()
+        # --- FINAL ONNX FIX ---
+        # Float island for residual scaling
+        self.res_dequant = tq.DeQuantStub()
+        self.res_quant = tq.QuantStub()
         # --- END FIX ---
+
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         shortcut = x
@@ -428,20 +433,21 @@ class AetherBlock(nn.Module):
         
         residual_unscaled = self.drop_path(x)
         
+        # --- FINAL ONNX FIX ---
+        # Replace mul_scalar with a float island
         if self.is_quantized:
-            residual = self.quant_mul_scalar.mul_scalar(residual_unscaled, self.res_scale)
+            res_float = self.res_dequant(residual_unscaled)
+            res_scaled = res_float * self.res_scale
+            residual = self.res_quant(res_scaled)
         else:
             residual = residual_unscaled * self.res_scale
+        # --- END FIX ---
 
-        # --- FINAL FIX ---
-        # The logic is now much simpler. In a quantized model, both `shortcut` and
-        # `residual` are already quantized tensors. We just add them. In a float
-        # model, we do the standard float addition.
+        # Add the quantized tensors
         if self.is_quantized:
             return self.quant_add.add(shortcut, residual)
         else:
             return shortcut + residual
-        # --- END FIX ---
 
 
 class QuantFusion(nn.Module):
@@ -666,15 +672,18 @@ class AetherNet(nn.Module):
         if not self.fused_init:
             self.apply(self._init_weights)
 
-        # Stubs for the top-level quant/dequant
+        # --- THE FINAL FIX (in __init__) ---
+        # Add float island stubs for the entire upsampling module
+        self.upsample_dequant = tq.DeQuantStub()
+        self.upsample_quant = tq.QuantStub()
+        # --- END FIX ---
+        
+        # All other stubs are still necessary and correct
         self.quant = tq.QuantStub()
         self.dequant = tq.DeQuantStub()
-
-        # --- THE FINAL FIX ---
-        # Add float island stubs for the main `self.norm` layer
         self.body_norm_dequant = tq.DeQuantStub()
         self.body_norm_quant = tq.QuantStub()
-        # --- END FIX ---
+        self.quant_add = torch.nn.quantized.FloatFunctional()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x_in = x / self.img_range if self.img_range != 1.0 else x
