@@ -1,5 +1,3 @@
-# --- FILE: aether_core.py (Corrected) ---
-
 # -*- coding: utf-8 -*-
 # --- File Information ---
 # Version: 3.1.1 (Production-Ready)
@@ -71,7 +69,10 @@ def parse_version(ver_str: str) -> List[int]:
 
 class DropPath(nn.Module):
     """
-    Stochastic Depth with ONNX-compatible implementation.
+    Stochastic Depth implementation compatible with ONNX export.
+    
+    During training, randomly drops entire sample paths with given probability.
+    During inference, acts as identity function.
     
     Args:
         drop_prob: Probability of dropping a path (0.0 = no drop)
@@ -93,7 +94,10 @@ class DropPath(nn.Module):
 
 class ReparamLargeKernelConv(nn.Module):
     """
-    Efficient large kernel convolution with structural reparameterization.
+    Efficient large kernel convolution using structural reparameterization.
+    
+    Combines large and small kernel convolutions during training, fuses them
+    into a single convolution for inference efficiency.
     
     Args:
         in_channels: Input channels
@@ -121,16 +125,11 @@ class ReparamLargeKernelConv(nn.Module):
         self.is_quantized = False
 
         if self.fused:
-            # --- THE FIX ---
-            # Initialize directly with padding, no separate pad layer
+            # Directly initialize fused convolution
             self.fused_conv = nn.Conv2d(in_channels, out_channels, kernel_size, stride,
                                         padding=self.padding, groups=groups, bias=True)
-            # self.explicit_pad is no longer needed
-            if hasattr(self, 'explicit_pad'):
-                del self.explicit_pad
-            # --- END FIX ---
         else:
-            # Training path
+            # Training path with separate convolutions
             self.lk_conv = nn.Conv2d(in_channels, out_channels, kernel_size, stride,
                                      self.padding, groups=groups, bias=False)
             self.sk_conv = nn.Conv2d(in_channels, out_channels, small_kernel, stride,
@@ -140,19 +139,16 @@ class ReparamLargeKernelConv(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if self.fused:
-            # --- THE FIX ---
-            # The forward pass is now a simple, single operation
             return self.fused_conv(x)
-            # --- END FIX ---
 
-        # Training forward pass is unchanged and correct
+        # Training forward pass combines both convolutions
         lk_out = self.lk_conv(x)
         sk_out = self.sk_conv(x)
         return (lk_out + self.lk_bias.view(1, -1, 1, 1) +
                 sk_out + self.sk_bias.view(1, -1, 1, 1))
 
     def _fuse_kernel(self) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Compute fused kernel and bias for deployment."""
+        """Compute fused kernel and bias for deployment"""
         if self.fused:
             raise RuntimeError("Module is already fused")
 
@@ -163,17 +159,14 @@ class ReparamLargeKernelConv(nn.Module):
         return fused_kernel, fused_bias
 
     def fuse(self):
-        """Fuse branches into single convolution."""
+        """Fuse branches into single convolution for inference"""
         if self.fused:
             return
 
         fused_kernel, fused_bias = self._fuse_kernel()
         
-        # --- THE FIX ---
-        # Create a single Conv2d with the padding argument included
         self.fused_conv = nn.Conv2d(self.in_channels, self.out_channels, self.kernel_size,
                                     self.stride, padding=self.padding, groups=self.groups, bias=True)
-        # --- END FIX ---
                                     
         self.fused_conv.weight.data = fused_kernel
         self.fused_conv.bias.data = fused_bias
@@ -182,18 +175,15 @@ class ReparamLargeKernelConv(nn.Module):
         if self.is_quantized and hasattr(self.lk_conv, 'qconfig'):
             self.fused_conv.qconfig = self.lk_conv.qconfig
             
-        # Cleanup
+        # Cleanup training-specific parameters
         del self.lk_conv, self.sk_conv, self.lk_bias, self.sk_bias
-        # --- THE FIX ---
-        # Delete the explicit_pad layer if it exists
-        if hasattr(self, 'explicit_pad'):
-            del self.explicit_pad
-        # --- END FIX ---
         self.fused = True
 
 class GatedConvFFN(nn.Module):
     """
     Gated Feed-Forward Network for enhanced feature transformation.
+    
+    Uses SiLU activation with temperature scaling and quantization support.
     
     Args:
         in_channels: Input channels
@@ -214,21 +204,18 @@ class GatedConvFFN(nn.Module):
         self.is_quantized = False
         self.quant_mul = torch.nn.quantized.FloatFunctional()
 
-        # Float island for SiLU
+        # Quantization stubs for SiLU activation
         self.act_dequant = tq.DeQuantStub()
         self.act_quant = tq.QuantStub()
         
-        # --- FINAL ONNX FIX ---
-        # Float island for temperature multiplication
+        # Quantization stubs for temperature scaling
         self.temp_dequant = tq.DeQuantStub()
         self.temp_quant = tq.QuantStub()
-        # --- END FIX ---
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         gate_unscaled = self.conv_gate(x)
         
-        # --- FINAL ONNX FIX ---
-        # Replace mul_scalar with a float island
+        # Temperature scaling in float domain for quantization compatibility
         if self.is_quantized:
             gate_float = self.temp_dequant(gate_unscaled)
             gate_scaled = gate_float * self.temperature
@@ -238,10 +225,12 @@ class GatedConvFFN(nn.Module):
         
         main = self.conv_main(x)
         
+        # SiLU activation in float domain
         gate = self.act_dequant(gate)
         activated = self.act(gate)
         activated = self.act_quant(activated)
         
+        # Handle mixed precision scenarios
         if x.dtype == torch.float16:
              x = activated.float() * main.float()
              x = x.half()
@@ -257,7 +246,7 @@ class GatedConvFFN(nn.Module):
 
 class DynamicChannelScaling(nn.Module):
     """
-    Efficient Channel Attention (Squeeze-and-Excitation).
+    Efficient Channel Attention (Squeeze-and-Excitation) mechanism.
     
     Args:
         dim: Input dimension
@@ -309,7 +298,10 @@ class SpatialAttention(nn.Module):
 
 class DeploymentNorm(nn.Module):
     """
-    Deployment-friendly normalization layer.
+    Deployment-friendly normalization layer with fusion support.
+    
+    Maintains running statistics during training, converts to
+    simple affine transform for inference.
     
     Args:
         channels: Number of channels
@@ -332,7 +324,7 @@ class DeploymentNorm(nn.Module):
             mean = x.mean(dim=(0, 2, 3), keepdim=True)
             var = x.var(dim=(0, 2, 3), keepdim=True, unbiased=False)
             with torch.no_grad():
-                # Use a slightly higher momentum for faster convergence of stats
+                # Update running statistics with momentum
                 self.running_mean.mul_(0.9).add_(mean, alpha=0.1)
                 self.running_var.mul_(0.9).add_(var, alpha=0.1)
         else:
@@ -343,18 +335,18 @@ class DeploymentNorm(nn.Module):
         return x * self.weight + self.bias
 
     def fuse(self):
-        """Fuse normalization into affine transform."""
+        """Fuse normalization into affine transform for inference"""
         if self.fused:
             return
         
-        # Use running stats for fusion
+        # Compute fused scale and shift
         scale = self.weight / torch.sqrt(self.running_var + self.eps)
         shift = self.bias - self.running_mean * scale
         
         self.weight.data = scale
         self.bias.data = shift
         
-        # Cleanup unnecessary buffers
+        # Cleanup buffers
         del self.running_mean
         del self.running_var
         
@@ -362,7 +354,7 @@ class DeploymentNorm(nn.Module):
 
 
 class LayerNorm2d(nn.LayerNorm):
-    """LayerNorm for 4D tensors."""
+    """2D-adapted LayerNorm for 4D tensors."""
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = x.permute(0, 2, 3, 1)
         x = super().forward(x)
@@ -371,7 +363,10 @@ class LayerNorm2d(nn.LayerNorm):
 
 class AetherBlock(nn.Module):
     """
-    Core building block of AetherNet.
+    Core building block of AetherNet architecture.
+    
+    Combines large kernel convolution, gated FFN, and attention mechanisms
+    with residual connection and quantization support.
     
     Args:
         dim: Feature dimension
@@ -393,7 +388,7 @@ class AetherBlock(nn.Module):
                  use_channel_attn: bool = True, use_spatial_attn: bool = False,
                  norm_layer: nn.Module = DeploymentNorm, res_scale: float = 0.1):
         super().__init__()
-        self.res_scale = res_scale # This remains a Python float
+        self.res_scale = res_scale
         self.conv = ReparamLargeKernelConv(
             in_channels=dim, out_channels=dim, kernel_size=lk_kernel,
             stride=1, groups=dim, small_kernel=sk_kernel, fused_init=fused_init
@@ -404,25 +399,24 @@ class AetherBlock(nn.Module):
         self.spatial_attn = SpatialAttention() if use_spatial_attn else nn.Identity()
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
 
+        # Quantization utilities
         self.quant_add = torch.nn.quantized.FloatFunctional()
         self.quant_mul_scalar = torch.nn.quantized.FloatFunctional()
         self.is_quantized = False
         
-        # Float island for DeploymentNorm
+        # Quantization stubs for normalization
         self.norm_dequant = tq.DeQuantStub()
         self.norm_quant = tq.QuantStub()
         
-        # --- FINAL ONNX FIX ---
-        # Float island for residual scaling
+        # Quantization stubs for residual scaling
         self.res_dequant = tq.DeQuantStub()
         self.res_quant = tq.QuantStub()
-        # --- END FIX ---
-
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         shortcut = x
         x = self.conv(x)
 
+        # Normalization in float domain
         x = self.norm_dequant(x)
         x = self.norm(x)
         x = self.norm_quant(x)
@@ -433,17 +427,15 @@ class AetherBlock(nn.Module):
         
         residual_unscaled = self.drop_path(x)
         
-        # --- FINAL ONNX FIX ---
-        # Replace mul_scalar with a float island
+        # Residual scaling in float domain
         if self.is_quantized:
             res_float = self.res_dequant(residual_unscaled)
             res_scaled = res_float * self.res_scale
             residual = self.res_quant(res_scaled)
         else:
             residual = residual_unscaled * self.res_scale
-        # --- END FIX ---
 
-        # Add the quantized tensors
+        # Add residual connection
         if self.is_quantized:
             return self.quant_add.add(shortcut, residual)
         else:
@@ -453,6 +445,9 @@ class AetherBlock(nn.Module):
 class QuantFusion(nn.Module):
     """
     Multi-scale feature fusion with quantization support.
+    
+    Aligns and concatenates features from multiple scales, applies
+    convolution fusion with error compensation.
     
     Args:
         in_channels: Total input channels
@@ -483,10 +478,7 @@ class QuantFusion(nn.Module):
         x = torch.cat(aligned_features, dim=1)
         fused = self.fusion_conv(x)
         
-        # --- THE FINAL FIX ---
-        # The 'fused' tensor is quantized, but 'error_comp' is a float parameter.
-        # We cannot add them in the quantized path. We bypass the addition for INT8.
-        # The FP32/FP16 models will still perform the addition correctly.
+        # Skip error compensation in quantized mode
         if self.is_quantized:
             return fused
         
@@ -495,7 +487,9 @@ class QuantFusion(nn.Module):
 
 class AdaptiveUpsample(nn.Module):
     """
-    Resolution-aware upsampling module.
+    Resolution-aware upsampling module supporting powers of 2 and scale 3.
+    
+    Uses PixelShuffle for efficient upsampling with dynamic channel allocation.
     
     Args:
         scale: Upscaling factor
@@ -506,13 +500,8 @@ class AdaptiveUpsample(nn.Module):
         self.scale = scale
         self.in_channels = in_channels
         self.blocks = nn.ModuleList()
-        # Ensure out_channels is a multiple of 2 for PixelShuffle
+        # Ensure out_channels is multiple of 4 for PixelShuffle
         self.out_channels = max(32, (in_channels // max(1, scale // 2)) & -2)
-
-        # --- THE FINAL FIX ---
-        # Add a quantizer at the entry point of this module.
-        #self.quant = tq.QuantStub()
-        # --- END FIX ---
 
         # Power of 2 scaling
         if (scale & (scale - 1)) == 0 and scale != 1:
@@ -534,10 +523,6 @@ class AdaptiveUpsample(nn.Module):
             raise ValueError(f"Unsupported scale: {scale}. Only 1, 3 and powers of 2")
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # --- THE FINAL FIX ---
-        # Quantize the incoming float tensor from the float island
-        #x = self.quant(x)
-        # --- END FIX ---
         for block in self.blocks:
             x = block(x)
         return x
@@ -546,7 +531,7 @@ class AdaptiveUpsample(nn.Module):
 
 class AetherNet(nn.Module):
     """
-    Production-Ready Super-Resolution Network.
+    Production-Ready Super-Resolution Network with QAT support.
     
     Args:
         in_chans: Input channels (default: 3 for RGB)
@@ -570,7 +555,7 @@ class AetherNet(nn.Module):
     MODEL_VERSION = "3.1.1"
     
     def _init_weights(self, m: nn.Module):
-        """Initialize weights for various layer types."""
+        """Initialize weights using truncated normal distribution"""
         if isinstance(m, (nn.Conv2d, nn.Linear)):
             trunc_normal_(m.weight, std=0.02)
             if m.bias is not None:
@@ -625,12 +610,15 @@ class AetherNet(nn.Module):
         self.num_stages = len(depths)
         self.is_quantized = False
         
+        # Version tracking
         self.register_buffer('pt_version', torch.tensor(parse_version(torch.__version__)))
         self.register_buffer('model_version', torch.tensor(parse_version(self.MODEL_VERSION)))
         self.register_buffer('mean', torch.full((1, in_chans, 1, 1), 0.5))
 
+        # Initial convolution
         self.conv_first = nn.Conv2d(in_chans, embed_dim, 3, 1, 1)
 
+        # Normalization layer selection
         if norm_type.lower() == 'deployment':
             norm_layer = DeploymentNorm
         elif norm_type.lower() == 'layernorm':
@@ -638,17 +626,20 @@ class AetherNet(nn.Module):
         else:
             raise ValueError(f"Unsupported norm_type: {norm_type}")
 
+        # Stage construction
         self.stages = nn.ModuleList()
         total_blocks = sum(depths)
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, total_blocks)]
         self.fusion_convs = nn.ModuleList()
 
+        # Channel distribution for multi-scale fusion
         base_ch = embed_dim // self.num_stages
         remainder = embed_dim % self.num_stages
         fusion_out_channels = [base_ch + 1 if i < remainder else base_ch for i in range(self.num_stages)]
         
         assert sum(fusion_out_channels) == embed_dim, "Channel distribution error"
 
+        # Build stages and fusion convolutions
         block_idx = 0
         for i, depth in enumerate(depths):
             stage_blocks = []
@@ -663,56 +654,58 @@ class AetherNet(nn.Module):
             block_idx += depth
             self.fusion_convs.append(nn.Conv2d(embed_dim, fusion_out_channels[i], 1))
 
-        # --- THE FINAL FIX (in __init__) ---
-        # Add the quantized functional for the main residual connection
-        self.quant_add = torch.nn.quantized.FloatFunctional()
-        # --- END FIX ---
-
+        # Feature fusion and reconstruction
         self.quant_fusion_layer = QuantFusion(embed_dim, embed_dim)
-        self.norm = norm_layer(embed_dim) # This is the problematic norm layer
+        self.norm = norm_layer(embed_dim)
         self.conv_after_body = nn.Conv2d(embed_dim, embed_dim, 3, 1, 1)
 
+        # Upsampling path
         self.conv_before_upsample = nn.Sequential(
             nn.Conv2d(embed_dim, embed_dim, 3, 1, 1), 
             nn.LeakyReLU(inplace=True))
         self.upsample = AdaptiveUpsample(scale, embed_dim)
         self.conv_last = nn.Conv2d(self.upsample.out_channels, in_chans, 3, 1, 1)
 
+        # Initialize weights if not fused
         if not self.fused_init:
             self.apply(self._init_weights)
 
-        # --- THE FINAL FIX (in __init__) ---
-        # Add float island stubs for the entire upsampling module
-        self.upsample_dequant = tq.DeQuantStub()
-        self.upsample_quant = tq.QuantStub()
-        # --- END FIX ---
-        
-        # All other stubs are still necessary and correct
+        # Quantization utilities
         self.quant = tq.QuantStub()
         self.dequant = tq.DeQuantStub()
         self.body_norm_dequant = tq.DeQuantStub()
         self.body_norm_quant = tq.QuantStub()
         self.quant_add = torch.nn.quantized.FloatFunctional()
+        
+        # Upsampling float island stubs
+        self.upsample_dequant = tq.DeQuantStub()
+        self.upsample_quant = tq.QuantStub()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Input normalization
         x_in = x / self.img_range if self.img_range != 1.0 else x
         x_in = x_in - self.mean
         
+        # Quantization entry point
         x = self.quant(x_in)
         x_first = self.conv_first(x)
 
+        # Feature extraction stages
         features = []
         out = x_first
         for stage in self.stages:
             out = stage(out)
             features.append(self.fusion_convs[len(features)](out))
 
+        # Multi-scale feature fusion
         fused_features = self.quant_fusion_layer(features)
         
+        # Normalization in float domain
         body_out = self.body_norm_dequant(fused_features)
         body_out = self.norm(body_out)
         body_out = self.body_norm_quant(body_out)
         
+        # Residual connections
         if self.is_quantized:
             body_out = self.quant_add.add(body_out, x_first)
             body_out = self.quant_add.add(self.conv_after_body(body_out), body_out)
@@ -720,12 +713,13 @@ class AetherNet(nn.Module):
             body_out = body_out + x_first
             body_out = self.conv_after_body(body_out) + body_out
         
+        # Reconstruction
         recon = self.conv_before_upsample(body_out)
         
-        # Create the float island in the forward pass
+        # Upsampling in float domain for quantization compatibility
         if self.is_quantized:
             recon = self.upsample_dequant(recon)
-            recon = self.upsample(recon) # This now runs entirely in float
+            recon = self.upsample(recon)
             recon = self.upsample_quant(recon)
         else:
             recon = self.upsample(recon)
@@ -733,11 +727,13 @@ class AetherNet(nn.Module):
         recon = self.conv_last(recon)
         output = self.dequant(recon)
 
+        # Output denormalization
         output = output + self.mean
         output = output * self.img_range if self.img_range != 1.0 else output
         return output
 
     def fuse_model(self):
+        """Fuse reparameterizable components for inference"""
         if self.fused_init:
             return
         for module in self.modules():
@@ -749,6 +745,9 @@ class AetherNet(nn.Module):
         """
         Prepare model for Quantization-Aware Training.
         
+        Configures quantization observers and fuses model components.
+        Explicitly excludes upsampling module from quantization.
+        
         Args:
             per_channel: Use per-channel quantization for weights
         """
@@ -756,6 +755,7 @@ class AetherNet(nn.Module):
             warnings.warn("Per-channel quantization requires PyTorch 1.10+. Disabling.")
             per_channel = False
 
+        # Configure quantization observers
         activation_observer = MovingAverageMinMaxObserver.with_args(
             qscheme=torch.per_tensor_affine,
             dtype=torch.quint8,
@@ -776,34 +776,31 @@ class AetherNet(nn.Module):
         
         self.fuse_model()
         
-        # --- THIS IS THE FINAL MISSING LINE ---
-        # Explicitly prevent the quantization process from entering the upsample module.
-        # This forces it to remain a float module, making our float island work correctly.
+        # Exclude upsampling module from quantization
         self.upsample.qconfig = None
-        # --- END OF FINAL FIX ---
 
         tq.prepare_qat(self, inplace=True)
         self._set_quantization_flags(True)
         
 
     def _set_quantization_flags(self, status: bool):
+        """Set quantization status flag on all relevant modules"""
         for module in self.modules():
             if hasattr(module, 'is_quantized'):
                 module.is_quantized = status
 
     def convert_to_quantized(self) -> nn.Module:
-        """Convert QAT model to fully quantized INT8 model."""
+        """Convert QAT model to fully quantized INT8 model"""
         if not self.is_quantized:
             raise RuntimeError("Model must be prepared with prepare_qat() first")
         
         self.eval()
-        # Convert the already-prepared QAT model to a quantized integer model
         quantized_model = tq.convert(self, inplace=False)
         quantized_model._set_quantization_flags(True)
         return quantized_model
 
     def verify_quantization(self):
-        """Check quantization status of all layers."""
+        """Check quantization status of all layers"""
         non_quantized = []
         for name, module in self.named_modules():
             # Check for standard layers that should be quantized
@@ -824,7 +821,7 @@ class AetherNet(nn.Module):
         return len(non_quantized) == 0
     
     def get_config(self) -> Dict[str, Any]:
-        """Return the complete architecture configuration."""
+        """Return the complete architecture configuration"""
         return deepcopy(self.arch_config)
 
     def save_optimized(self, filename: str, precision: str = 'fp32'):
@@ -866,11 +863,10 @@ class AetherNet(nn.Module):
             'state_dict': model.state_dict(),
             'metadata': metadata
         }, filename)
-        
-        pass
 
     @classmethod
     def load_optimized(cls, filename: str, device='cuda'):
+        """Load optimized model with architecture reconstruction"""
         checkpoint = torch.load(filename, map_location='cpu')
         metadata = checkpoint.get('metadata', {})
         arch_config = metadata.get('arch_config', None)
@@ -890,13 +886,11 @@ class AetherNet(nn.Module):
             model._set_quantization_flags(True)
 
         model.load_state_dict(checkpoint['state_dict'])
-        
-        if is_qat_model:
-            model.eval() # Important after loading a QAT state
-        
+        model.eval()
         return model.to(device)
         
     def _get_architecture_name(self) -> str:
+        """Get human-readable architecture name based on embed_dim"""
         if self.embed_dim <= 64: return "aether_tiny"
         if self.embed_dim <= 96: return "aether_small"
         if self.embed_dim <= 128: return "aether_medium"
@@ -906,22 +900,22 @@ class AetherNet(nn.Module):
     def stabilize_for_fp16(self):
         """
         Apply comprehensive FP16 stabilization techniques.
-        This should be called on the FP32 model *before* converting to .half().
+        
+        Clamps parameters to prevent overflow in FP16 precision.
+        Should be called on FP32 model before converting to .half().
         """
         print("Applying FP16 stabilization...")
         for module in self.modules():
-            # Stabilize DeploymentNorm layers post-fusion
+            # Stabilize fused normalization layers
             if isinstance(module, DeploymentNorm) and module.fused:
-                # After fusion, 'weight' is the scale and 'bias' is the shift.
-                # Clamp these to prevent extreme values that cause FP16 overflow.
                 module.weight.data.clamp_(min=-100.0, max=100.0)
                 module.bias.data.clamp_(min=-100.0, max=100.0)
                 
-            # Stabilize GatedConvFFN temperature
+            # Stabilize FFN temperature parameters
             if isinstance(module, GatedConvFFN):
                 module.temperature.data.clamp_(min=0.01, max=10.0)
                 
-        # Also clamp general weights and biases to a safe range
+        # General parameter stabilization
         for param in self.parameters():
             param.data.clamp_(min=-1000.0, max=1000.0)
         
@@ -938,7 +932,7 @@ if PT_VERSION >= version.parse("2.0.0"):
             mode: Compilation mode (default: max-autotune)
             
         Returns:
-            Compiled model for faster training
+            Compiled model for faster execution
         """
         return torch.compile(model, mode=mode, fullgraph=True)
 else:
@@ -955,22 +949,22 @@ else:
 # ------------------- Network Presets ------------------- 
 
 def aether_tiny(scale: int, **kwargs) -> AetherNet:
-    """Minimal version for real-time use (64 channels)."""
+    """Minimal version for real-time use (64 channels)"""
     return AetherNet(embed_dim=64, depths=(3, 3, 3), scale=scale,
                   use_spatial_attn=False, res_scale=0.2, **kwargs)
 
 def aether_small(scale: int, **kwargs) -> AetherNet:
-    """Small version (96 channels)."""
+    """Small version (96 channels)"""
     return AetherNet(embed_dim=96, depths=(4, 4, 4, 4), scale=scale,
                   use_spatial_attn=False, res_scale=0.1, **kwargs)
 
 def aether_medium(scale: int, **kwargs) -> AetherNet:
-    """Balanced version (128 channels)."""
+    """Balanced version (128 channels)"""
     return AetherNet(embed_dim=128, depths=(6, 6, 6, 6), scale=scale,
                   use_channel_attn=True, res_scale=0.1, **kwargs)
 
 def aether_large(scale: int, **kwargs) -> AetherNet:
-    """High-quality version (180 channels)."""
+    """High-quality version (180 channels)"""
     return AetherNet(embed_dim=180, depths=(8, 8, 8, 8, 8), scale=scale,
                   use_channel_attn=True, use_spatial_attn=True, res_scale=0.1, **kwargs)
 
@@ -984,10 +978,20 @@ def export_onnx(
 ) -> str:
     """
     Export model to ONNX format with optimizations and metadata.
+    
+    Args:
+        model: AetherNet model instance
+        scale: Super-resolution scale factor
+        precision: Export precision (fp32, fp16, int8)
+        output_path: Custom output path (optional)
+        
+    Returns:
+        Path to exported ONNX file
     """
     model.eval()
     model.fuse_model()
 
+    # Create dummy input
     dummy_input = torch.randn(1, 3, 64, 64, dtype=torch.float32)
     device = next(model.parameters(), None)
     if device is None:
@@ -996,7 +1000,7 @@ def export_onnx(
         device = device.device
     dummy_input = dummy_input.to(device)
     
-    # Handle precision
+    # Handle precision conversion
     if precision == 'fp16':
         model.half()
         dummy_input = dummy_input.half()
@@ -1004,20 +1008,24 @@ def export_onnx(
     if precision == 'int8' and not model.is_quantized:
         raise ValueError("INT8 export requires a quantized model. Ensure it has been converted.")
 
+    # Determine output filename
     model_name = model._get_architecture_name() if hasattr(model, '_get_architecture_name') else "aether"
     onnx_filename = output_path or f"{model_name}_x{scale}_{precision}.onnx"
     
+    # Configure dynamic axes for variable input sizes
     dynamic_axes = {
         'input': {0: 'batch_size', 2: 'height', 3: 'width'},
         'output': {0: 'batch_size', 2: 'height_out', 3: 'width_out'}
     }
 
+    # Export to ONNX
     torch.onnx.export(
         model, dummy_input, onnx_filename, opset_version=18,
         do_constant_folding=True, input_names=['input'], output_names=['output'],
         dynamic_axes=dynamic_axes,
     )
     
+    # Add metadata for Spandrel/ChaiNNer compatibility
     try:
         model_onnx = onnx.load(onnx_filename)
         
