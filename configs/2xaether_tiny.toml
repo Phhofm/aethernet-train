@@ -1,4 +1,4 @@
-name = "2xaether_tiny_qat"
+name = "2xaether_tiny"
 model_type = "image"
 scale = 2
 use_amp = false
@@ -35,14 +35,18 @@ type = "calculate_topiq"
 
 [network_g]
 type = "aether_tiny"
+#type = "aether_small"
+#type = "aether_medium"
+#type = "aether_large"
 
 [train]
-enable_qat = true
-grad_clip = true
+enable_qat = false # enable this for the qat from pretrain. Will automatically disable ema. Neosr automatically prioritizes loading the params-ema weights from the pretrain if they exist.
+grad_clip = true # even in FP32, certain data patches can cause the loss to spike momentarily. This hepls protect against exploding gradients.
+ema = 0.999 # use this for fp32 pretrain
 
 [train.optim_g]
 type = "adamw"
-lr = 2e-4
+lr = 2e-4 # Use lower learning rate for qat fine-tuning from fp32 pretrain: lr = 2e-5 # e.g., 1/10th of the final FP32 learning rate
 betas = [ 0.9, 0.99 ]
 weight_decay = 0
 
