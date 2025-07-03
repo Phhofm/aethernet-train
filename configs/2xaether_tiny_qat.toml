@@ -40,8 +40,8 @@ type = "aether_tiny"
 #type = "aether_large"
 
 [train]
-enable_qat = true # simulates integer quantization
-grad_clip = true # qat can amplify small numerical errors - grad clip helps as a safety net
+enable_qat = true # simulates integer quantization for better int8 robustness, no PTQ with calibration needed when converting, the model learned to handle reduced precision already. Will automatically disable ema (conflict). Neosr automatically prioritizes loading the params-ema weights from the pretrain if they exist, so use the non-qat pretrain i provided.
+grad_clip = true # qat can amplify small numerical errors because of integer quantization - grad clip helps as a safety net
 
 [train.optim_g]
 type = "adamw"

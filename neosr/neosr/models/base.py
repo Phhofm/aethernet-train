@@ -315,6 +315,10 @@ class base:
         for net_, param_key_ in zip(net, param_key, strict=True):
             net__ = self.get_bare_model(net_)
             
+            # If the model has a fuse method (like AetherNet), call it before saving.
+            if hasattr(net__, 'fuse_model') and callable(net__.fuse_model):
+                net__.fuse_model()
+
             # Add architecture config if it exists, metadata for Aether models
             if hasattr(net__, 'arch_config'):
                 save_dict['arch_config'] = net__.arch_config

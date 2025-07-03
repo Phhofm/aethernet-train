@@ -129,15 +129,17 @@ class image(base):
             else:
                 logger.info("Using exponential-moving average.")
                 self.net_g_ema = AveragedModel(
-                    self.net_g,  # type: ignore[reportArgumentType,arg-type]
+                    self.net_g,
                     multi_avg_fn=get_ema_multi_avg_fn(self.ema),
                     device=self.device,
+                    use_buffers=True,  # <-- Add this line
                 )
                 if self.net_d is not None:
                     self.net_d_ema = AveragedModel(
-                        self.net_d,  # type: ignore[reportArgumentType,arg-type]
+                        self.net_d,
                         multi_avg_fn=get_ema_multi_avg_fn(self.ema),
                         device=self.device,
+                        use_buffers=True,  # <-- And this line
                     )
 
         # sharpness-aware minimization
@@ -919,6 +921,7 @@ class image(base):
                 if (hasattr(self, "ema") and self.ema > 0)
                 else self.net_g
             )
+
             sf_mode = self.sf_optim_g and self.is_train
             # set eval mode
             model.eval()
