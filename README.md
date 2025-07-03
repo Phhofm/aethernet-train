@@ -1,104 +1,130 @@
-# aethernet-train
-Training code for the AetherNet SISR Network on https://github.com/Phhofm/aethernet/
+# AetherNet-Train: Training Framework for AetherNet SISR
 
-## License
+This repository provides the official training and deployment pipeline for the **AetherNet** Single-Image Super-Resolution (SISR) models. It is built upon the excellent **[neosr](https://github.com/neosr-project/neosr)** framework, which has been adapted specifically for training and optimizing AetherNet.
 
-The code and configurations in this repository are released under the **Apache 2.0 License**. See the `LICENSE` file for more details.
+The primary goal of this project is to offer a complete, end-to-end workflow for creating highly efficient, production-ready super-resolution models that leverage modern hardware capabilities.
 
-This project is built upon the `neosr` framework and includes it as a submodule. `neosr` and its dependencies are subject to their own licenses. Please see the `NOTICE` file and the `neosr/LICENSE-2.0-Multi` file for comprehensive licensing information.
+-   **This Repository:** [https://github.com/Phhofm/aethernet-train](https://github.com/Phhofm/aethernet-train)
+-   **AetherNet Architecture:** [https://github.com/Phhofm/aethernet](https://github.com/Phhofm/aethernet)
+-   **Original Neosr Framework:** [https://github.com/neosr-project/neosr](https://github.com/neosr-project/neosr)
 
-# AetherNet: An Ultra-Fast Super-Resolution Network
+> **Note:** While this framework is optimized for AetherNet, it is based on the powerful `neosr` project. If you wish to train other architectures (HAT, SwinIR, etc.), please refer to the official [neosr repository](https://github.com/neosr-project/neosr), which is actively maintained and supports a wider range of models.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-%23EE4C2C?logo=pytorch)](https://pytorch.org/)
-[![ONNX](https://img.shields.io/badge/ONNX-1.12+-%235A94DB?logo=onnx)](https://onnx.ai/)
+## The AetherNet Philosophy: Speed Without Compromise
 
-AetherNet is a production-ready, high-performance Single-Image Super-Resolution (SISR) network designed for extreme speed and efficiency without sacrificing quality. It is built from the ground up to leverage modern deep learning techniques like structural reparameterization and Quantization-Aware Training (QAT) to deliver state-of-the-art inference speeds on a wide range of hardware.
+AetherNet was designed from the ground up with one primary goal: **maximum inference speed** on a wide range of hardware, from high-end GPUs to CPUs. The architecture achieves this without a significant loss in quality by focusing on two key technologies:
 
-This repository contains the core model architecture and a robust deployment script for converting trained models into highly optimized formats.
+1.  **Quantization-Aware Training (QAT):** The ultimate goal of this pipeline is to produce an **INT8 ONNX model**. Integer-based (INT8) arithmetic is significantly faster than floating-point (FP32) arithmetic on modern hardware. QAT involves fine-tuning the model to be aware of quantization's constraints, which minimizes the quality degradation that typically occurs during conversion. This results in models that are nearly identical in quality to their FP32 counterparts but are orders of magnitude faster at inference time.
 
--   **Main Repository:** [https://github.com/Phhofm/aethernet](https://github.com/Phhofm/aethernet)
--   **Training Framework:** AetherNet can be trained using the NeoSR framework available at [https://github.com/Phhofm/aethernet-train](https://github.com/Phhofm/aethernet-train).
+2.  **Structural Reparameterization:** During training, AetherNet uses complex blocks with multiple convolution branches to increase its learning capacity. Before deployment, these complex blocks are mathematically **fused** into single, simple convolution layers. This gives you the quality benefits of a more complex architecture with the inference speed of a much simpler one—the "best of both worlds."
 
-## The Name: AetherNet
+## Installation and Setup
 
-The name "AetherNet" is inspired by the classical element 'aether' (or 'ether'), which was once thought to be a weightless, transparent substance that filled all of space. This name was chosen to reflect the network's core design goals: to be incredibly **lightweight** and **fast**, processing images so efficiently that it feels almost instantaneous, as if passing through the aether itself.
-
-## Core Philosophy & Design
-
-AetherNet was built to bridge the gap between academic research models, which often prioritize peak quality at any computational cost, and real-world applications, which demand speed and efficiency.
-
-### 1. Structural Reparameterization for Zero-Cost Quality
-At training time, AetherNet uses complex blocks with multiple parallel branches (e.g., large-kernel and small-kernel convolutions). These branches help the model learn more robust features and increase its representative power.
-
-However, for inference, these parallel branches are mathematically **fused into a single, standard convolution layer**. This means you get the performance benefits of a much more complex architecture with the inference speed of a simple, shallow network. The quality boost is effectively "free" at runtime.
-
-### 2. Quantization-Aware Training (QAT) for INT8 Speed
-Floating-point (FP32/FP16) arithmetic is the standard for training, but integer (INT8) arithmetic is significantly faster on modern CPUs and GPUs. Naively converting a model to INT8 (Post-Training Quantization) often leads to a severe drop in quality.
-
-AetherNet is designed to be fully compatible with **Quantization-Aware Training**. The model learns to adapt to the constraints of 8-bit integers *during* the training process. This results in an INT8 model that is nearly identical in quality to its full-precision counterpart but with a major speed advantage.
-
-### 3. Production-Ready Deployment
-A great model is only useful if it can be deployed. AetherNet comes with a robust release script (`aether_release.py`) that automates the entire conversion process, creating a full suite of deployable artifacts from a single trained checkpoint.
-
-## Comparison to Other Architectures
-
-AetherNet positions itself uniquely in the landscape of SISR models:
-
--   **vs. ESRGAN:** ESRGAN is a legendary baseline for perceptual quality, known for its ability to generate fine details. However, it is computationally heavy. AetherNet offers a much faster and more efficient alternative, making it suitable for real-time applications where ESRGAN would be too slow. AetherNet's INT8 models, in particular, are orders of magnitude faster.
-
--   **vs. SPAN / RealPLKSR:** These models also explore advanced architectural designs like spatial attention and large kernels to achieve high quality. AetherNet shares the use of large kernels but combines it with structural reparameterization and a first-class commitment to QAT. This gives it an edge in achieving the absolute best *performance-per-watt* on deployed hardware, especially when targeting INT8 inference.
-
--   **Uniqueness:** AetherNet's main differentiator is its holistic focus on **deployable performance**. The architecture and the release pipeline were co-designed to produce models that are not just high-quality but also practical, efficient, and easy to integrate into real-world applications using runtimes like ONNX Runtime, TensorRT, and DirectML.
-
-## Network Presets
-
-AetherNet comes in several sizes to fit different needs, from mobile devices to high-end GPUs:
-
--   `aether_tiny`: For real-time applications where speed is the absolute priority.
--   `aether_small`: A balanced choice offering a great mix of speed and quality.
--   `aether_medium`: A higher-quality option for less constrained environments.
--   `aether_large`: The highest-quality variant for when visual fidelity is paramount.
-
-## The Deployment Pipeline: `aether_release.py`
-
-A training checkpoint is not a deployment artifact. The release script is a crucial tool that bridges this gap.
-
-### Goal
-To take a single QAT-trained `.pth` checkpoint and automatically generate a full suite of validated, optimized models for every common use case.
-
-### How to Use
-The script is designed to be simple to run.
+To get started, clone this repository and set up the Python environment using the provided `requirements.txt`.
 
 ```bash
-# Activate your python environment
-# pip install -r requirements.txt (make sure torch, onnx, onnxruntime, etc. are installed)
+# 1. Clone the repository
+git clone https://github.com/Phhofm/aethernet-train.git
+cd aethernet-train
 
-python3 aether_release.py \
-    --model-path /path/to/your/net_g_final.pth \
-    --output-dir /path/to/your/release_folder \
-    --validation-dir /path/to/a/folder/of/images
+# 2. Create a Python virtual environment
+python3 -m venv venv
+
+# 3. Activate the environment
+# On Linux/macOS:
+source venv/bin/activate
+# On Windows:
+.\venv\Scripts\activate
+
+# 4. Install the required dependencies
+pip install -r requirements.txt
 ```
 
--   `--model-path`: Path to the final, finetuned QAT checkpoint.
--   `--output-dir`: Where the final models will be saved.
--   `--validation-dir`: A folder with a few sample images. The script will use one to perform a "smoke test" on each created model to ensure it runs without errors.
+You are now ready to train and deploy AetherNet models.
 
-### Output Files
-The script will generate up to six files in the output directory:
--   **PyTorch Models:**
-    -   `model_fp32.pth`: A fused, float32 model.
-    -   `model_fp16.pth`: A fused, half-precision model for NVIDIA GPUs.
-    -   `model_int8.pth`: A fused, quantized INT8 model for use within PyTorch.
--   **ONNX Models:**
-    -   `model_fp32.onnx`: The most compatible format for general use.
-    -   `model_fp16.onnx`: Ideal for deployment on NVIDIA GPUs via TensorRT or ONNX Runtime.
-    -   `model_int8.onnx`: **The fastest format.** Ideal for CPU inference and for deployment on NVIDIA/DirectML backends that support INT8.
+## The Complete Workflow: From Training to Deployment
 
-All ONNX models are saved with dynamic input axes and include metadata that allows tools like [Spandrel](https://github.com/chaiNNer-org/spandrel) and [ChaiNNer](https://chainner.app/) to load them automatically.
+The recommended workflow involves a two-stage training process followed by a release step. This ensures you get both a maximum-quality FP32 model and a maximum-speed INT8 model.
+
+### Stage 1: FP32 Pre-training (For Quality)
+
+The first step is to train a standard, high-quality FP32 model. This model will serve as an excellent starting point (a "pre-train") for the QAT phase.
+
+1.  **Configure:** Use one of the training configurations in the `configs/` directory, such as `2xaether_tiny.toml`. Ensure that `enable_qat` is set to `false` (or commented out) and that `ema` and `grad_clip` are enabled for stability and best results.
+
+    ```toml
+    # In configs/2xaether_tiny.toml
+    name = "2xaether_tiny_fp32"
+    model_type = "image"
+    ...
+    [network_g]
+    type = "aether_tiny"
+
+    [train]
+    enable_qat = false
+    ema = 0.999
+    grad_clip = true
+    ...
+    ```
+
+2.  **Train:** Start the training from the `neosr` directory.
+
+    ```bash
+    cd neosr
+    python3 train.py --opt ../configs/2xaether_tiny.toml
+    ```
+
+3.  **Result:** Let this run until the validation metrics plateau (e.g., 200,000+ iterations). The final saved checkpoint in the `experiments/` folder is your high-quality FP32 model.
+
+### Stage 2: QAT Fine-tuning (For Speed)
+
+Now, use the model from Stage 1 to fine-tune a new model that is resilient to quantization.
+
+1.  **Configure:** Create a new configuration file (e.g., `2xaether_tiny_qat.toml`).
+2.  **Modify the config:**
+    *   Set a new `name` for the experiment.
+    *   In the `[path]` section, set `pretrain_network_g` to the path of your best model from Stage 1 (e.g., `../experiments/2xaether_tiny_fp32/models/net_g_200000.pth`).
+    *   Set `strict_load_g = false` to allow loading the weights into the slightly different QAT architecture.
+    *   In the `[train]` section, set `enable_qat = true`.
+    *   **Important:** Use a lower learning rate for fine-tuning (e.g., `lr = 2e-5`).
+
+3.  **Train:** Start the new training run. This phase is much shorter, typically requiring only 50k-100k iterations to adapt the weights.
+
+### Stage 3: The Release Pipeline
+
+The `aether_release.py` script is used to convert your trained checkpoints into deployable formats. It correctly handles both QAT and non-QAT models.
+
+1.  **Navigate to the `archs` directory:**
+    ```bash
+    cd neosr/neosr/archs
+    ```
+
+2.  **Run the script:**
+    ```bash
+    python3 aether_release.py \
+        --model-path /path/to/your/net_g_final.pth \
+        --output-dir /path/to/your/release_folder \
+        --validation-dir /path/to/a/folder/of/images
+    ```
+    *   `--model-path`: Path to the checkpoint you want to convert (either the FP32 one or the QAT one).
+    *   `--output-dir`: Where the final models will be saved.
+    *   `--validation-dir`: A folder with sample images for a quick sanity check.
+
+3.  **Outputs:**
+    *   If you run it on a **non-QAT model**, it will produce fused `_fp32.pth`, `_fp16.pth`, and their corresponding `.onnx` versions.
+    *   If you run it on a **QAT model**, it will produce all of the above, plus the crucial `_int8.onnx` file, ready for high-performance inference with ONNX Runtime, TensorRT, or DirectML.
+
+## Pre-trained Models
+
+*(This section is a placeholder. You can add your GitHub Releases links here later.)*
+
+Pre-trained models for each AetherNet variant will be made available here. For each variant (`tiny`, `small`, `medium`, `large`), two models will be provided:
+
+-   **FP32 Model:** The highest-quality model, trained without QAT. Ideal for users with powerful GPUs who prioritize maximum visual fidelity.
+-   **QAT Model:** The model fine-tuned for quantization. Use this checkpoint with the release script to generate the super-fast INT8 ONNX file.
 
 ## License
-AetherNet is released under the **MIT License**. See the `LICENSE` file for more details.
 
-## Created By
-AetherNet was created by **Philip Hofmann** in a collaborative effort with advanced AI assistance. This project represents a fusion of human architectural design and AI-driven debugging and code generation, showcasing a modern workflow for creating complex deep learning systems.
+This project is released under the **Apache 2.0 License** (because neosr is under that license)
+
+This work is built upon the `neosr` framework. We extend our sincere gratitude to the original `neosr` authors and community for their foundational work.
