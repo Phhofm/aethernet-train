@@ -307,7 +307,7 @@ class DeploymentNorm(nn.Module):
         channels: Number of channels
         eps: Numerical stability epsilon
     """
-    def __init__(self, channels: int, eps: float = 1e-5):
+    def __init__(self, channels: int, eps: float = 1e-4):
         super().__init__()
         self.weight = nn.Parameter(torch.ones(1, channels, 1, 1))
         self.bias = nn.Parameter(torch.zeros(1, channels, 1, 1))
