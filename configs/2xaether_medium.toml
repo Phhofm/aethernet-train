@@ -38,6 +38,7 @@ type = "aether_medium"
 
 [train]
 enable_qat = true
+grad_clip = true
 
 [train.optim_g]
 type = "adamw"
