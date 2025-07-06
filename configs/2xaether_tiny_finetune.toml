@@ -1,4 +1,4 @@
-name = "2xaether_tiny"
+name = "2xaether_tiny_finetune"
 model_type = "image"
 scale = 2
 use_amp = false
@@ -9,7 +9,7 @@ fast_matmul = true
 type = "paired"
 dataroot_gt = '/home/phips/Documents/dataset/PDM/OSISRD/v3/hr'
 dataroot_lq = '/home/phips/Documents/dataset/PDM/OSISRD/v3/x2'
-patch_size = 64
+patch_size = 128 # from 64 to 128, because it hit its sealing with 64 and could not progress further
 batch_size = 8
 
 [datasets.val]
@@ -31,7 +31,7 @@ better = "lower"
 type = "calculate_topiq"
 
 [path]
-# pretrain_network_g = 'path/to/your/pretrained/model.pth' # no pretrain, from scratch
+pretrain_network_g = '/home/phips/Documents/GitHub/aethernet-train/neosr/experiments/2xaether_tiny/models/net_g_210000.pth' # could not progress / peak this model. Ill try with patch 192 instead of 64 and see if it can 
 
 [network_g]
 type = "aether_tiny"
@@ -46,7 +46,7 @@ ema = 0.999 # use this for fp32 pretrain
 
 [train.optim_g]
 type = "adamw"
-lr = 2e-4 # high learning rate for exploration phase. allows the model to take large steps, explore the vast loss landscape, and rapidly converge to a high-quality solution state
+lr = 1e-4
 betas = [ 0.9, 0.99 ]
 weight_decay = 0
 
@@ -54,6 +54,11 @@ weight_decay = 0
 type = "L1Loss"
 loss_weight = 1.0
 reduction = "mean"
+
+[train.scheduler]
+type = "MultiStepLR"
+milestones = [ 400000, 600000, 800000, 900000 ]
+gamma = 0.5
 
 [logger]
 total_iter = 1000000

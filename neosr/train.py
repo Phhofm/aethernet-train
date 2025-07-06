@@ -387,6 +387,11 @@ def train_pipeline(root_path: str) -> None:
                             tb_logger,
                             opt["datasets"]["val"].get("save_img", True),
                         )
+                    # THE FIX: After validation, ensure the model is explicitly moved back to the training device.
+                    # This prevents device mismatches when the EMA update is called in the next optimizer step.
+                    model.net_g.to(model.device)
+                    if hasattr(model, 'net_g_ema'):
+                        model.net_g_ema.to(model.device)
 
                 # data_timer.start()
                 iter_timer.start()

@@ -1,4 +1,8 @@
-name = "2xaether_tiny"
+# Best quality / training setting for my system with an rtx 3060 with 12gb vram
+# fp32 is fastest training option for this efficient network option, aether_tiny
+# my vram is pretty close to its limit
+
+name = "2xaether_tiny_pretrain"
 model_type = "image"
 scale = 2
 use_amp = false
@@ -9,7 +13,7 @@ fast_matmul = true
 type = "paired"
 dataroot_gt = '/home/phips/Documents/dataset/PDM/OSISRD/v3/hr'
 dataroot_lq = '/home/phips/Documents/dataset/PDM/OSISRD/v3/x2'
-patch_size = 64
+patch_size = 192
 batch_size = 8
 
 [datasets.val]
@@ -45,10 +49,12 @@ grad_clip = true # even in FP32, certain data patches can cause the loss to spik
 ema = 0.999 # use this for fp32 pretrain
 
 [train.optim_g]
-type = "adamw"
-lr = 2e-4 # high learning rate for exploration phase. allows the model to take large steps, explore the vast loss landscape, and rapidly converge to a high-quality solution state
-betas = [ 0.9, 0.99 ]
-weight_decay = 0
+type = "adan_sf"
+lr = 1e-3
+betas = [ 0.98, 0.92, 0.99 ]
+weight_decay = 0.01
+schedule_free = true
+warmup_steps = 1600
 
 [train.pixel_opt]
 type = "L1Loss"

@@ -128,18 +128,23 @@ class image(base):
                 self.ema = -1 # Explicitly disable EMA
             else:
                 logger.info("Using exponential-moving average.")
+                # Define a safe EMA averaging function that will be applied per-parameter
+                def ema_avg(averaged_model_parameter, model_parameter, num_averaged):
+                    # this is the official formula from the PyTorch docs
+                    return self.ema * averaged_model_parameter + (1 - self.ema) * model_parameter
+
                 self.net_g_ema = AveragedModel(
                     self.net_g,
-                    multi_avg_fn=get_ema_multi_avg_fn(self.ema),
+                    avg_fn=ema_avg, # Use the standard avg_fn
+                    use_buffers=True,
                     device=self.device,
-                    use_buffers=True,  # <-- Add this line
                 )
                 if self.net_d is not None:
                     self.net_d_ema = AveragedModel(
                         self.net_d,
-                        multi_avg_fn=get_ema_multi_avg_fn(self.ema),
+                        avg_fn=ema_avg, # Use the standard avg_fn
+                        use_buffers=True,
                         device=self.device,
-                        use_buffers=True,  # <-- And this line
                     )
 
         # sharpness-aware minimization

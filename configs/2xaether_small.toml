@@ -1,4 +1,4 @@
-name = "2xaether_tiny"
+name = "2xaether_small"
 model_type = "image"
 scale = 2
 use_amp = false
@@ -34,8 +34,8 @@ type = "calculate_topiq"
 # pretrain_network_g = 'path/to/your/pretrained/model.pth' # no pretrain, from scratch
 
 [network_g]
-type = "aether_tiny"
-#type = "aether_small"
+#type = "aether_tiny"
+type = "aether_small"
 #type = "aether_medium"
 #type = "aether_large"
 
@@ -54,6 +54,11 @@ weight_decay = 0
 type = "L1Loss"
 loss_weight = 1.0
 reduction = "mean"
+
+[train.scheduler]
+type = "MultiStepLR"
+milestones = [ 400000, 600000, 800000, 900000 ]
+gamma = 0.5
 
 [logger]
 total_iter = 1000000

@@ -15,6 +15,8 @@ from neosr.optimizers import adamw_sf, adamw_win, adan, adan_sf, soap_sf
 from neosr.utils import get_root_logger, tc
 from neosr.utils.dist_util import master_only
 
+from torch.optim.swa_utils import AveragedModel
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -204,6 +206,8 @@ class base:
         """Get bare model, especially under wrapping with
         DistributedDataParallel or DataParallel.
         """
+        if isinstance(net, AveragedModel):
+            net = net.module
         if isinstance(net, DataParallel | DistributedDataParallel):
             net = net.module
         return net
@@ -316,8 +320,8 @@ class base:
             net__ = self.get_bare_model(net_)
             
             # If the model has a fuse method (like AetherNet), call it before saving.
-            if hasattr(net__, 'fuse_model') and callable(net__.fuse_model):
-                net__.fuse_model()
+            #if hasattr(net__, 'fuse_model') and callable(net__.fuse_model):
+            #    net__.fuse_model()
 
             # Add architecture config if it exists, metadata for Aether models
             if hasattr(net__, 'arch_config'):
