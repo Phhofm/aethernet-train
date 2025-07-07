@@ -6,7 +6,7 @@
 from neosr.utils.registry import ARCH_REGISTRY
 
 # Import the factory functions from your single-source-of-truth file
-from .aether_core import aether_large, aether_medium, aether_small, aether_tiny
+from .aethernet_utils import aether_large, aether_medium, aether_small, aether_tiny
 
 # Register each factory function with the framework.
 # The decorator will automatically use the function's name as the key.

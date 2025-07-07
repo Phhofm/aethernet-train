@@ -15,7 +15,7 @@ import platform
 import traceback
 from pathlib import Path
 from copy import deepcopy
-from typing import Callable, Any, List
+from typing import Callable, Any, List, Optional  # Fixed: Added Optional import
 
 import torch
 import numpy as np
@@ -45,8 +45,6 @@ IS_MAC = platform.system() == "Darwin"
 IS_LINUX = platform.system() == "Linux"
 HAS_CUDA = torch.cuda.is_available()
 HAS_DML = "DmlExecutionProvider" in ort.get_available_providers()
-PT_VERSION = parse_version(torch.__version__)
-MIN_PT_VERSION = parse_version("1.10.0")
 
 # ------------------- Constants & Configuration ------------------- 
 MAX_RETRIES = 3
