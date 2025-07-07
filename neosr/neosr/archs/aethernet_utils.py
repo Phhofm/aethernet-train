@@ -26,7 +26,7 @@ from packaging import version  # For version parsing
 import torch.onnx
 import torch.ao.quantization as tq
 
-from aethernet_arch import AetherNet, DeploymentNorm, GatedConvFFN
+from .aethernet_arch import AetherNet, DeploymentNorm, GatedConvFFN
 
 
 def parse_version(ver_str: str) -> List[int]:
