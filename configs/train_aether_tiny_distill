@@ -1,0 +1,71 @@
+name = "train_aether_tiny_distill"
+model_type = "image"
+scale = 2
+use_amp = true
+bfloat16 = true
+fast_matmul = true
+
+[datasets.train]
+type = "paired"
+dataroot_gt = '/path/to/your/dataset/hr'
+dataroot_lq = '/path/to/your/dataset/x2'
+patch_size = 64
+batch_size = 8
+
+[datasets.val]
+name = "val"
+type = "paired"
+dataroot_gt = '/path/to/your/validation/hr'
+dataroot_lq = '/path/to/your/validation/x2'
+
+[val]
+val_freq = 5000
+[val.metrics.psnr]
+type = "calculate_psnr"
+[val.metrics.ssim]
+type = "calculate_ssim"
+
+[path]
+# The student model can be trained from scratch or from a pre-trained checkpoint.
+# pretrain_network_g = 'path/to/your/student_pretrain.pth'
+
+# -- Knowledge Distillation paths --
+# The teacher model *must* be pre-trained.
+pretrain_network_teacher = '/path/to/your/large_teacher_model.pth'
+
+[network_g]
+# This is the student model
+type = "aether_tiny"
+
+[train]
+ema = 0.999
+
+# -- Knowledge Distillation options --
+[train.distill_opt]
+# The teacher model
+teacher_type = "aether_large" # or "hat_l", "atd", etc.
+
+# The loss for comparing student and teacher outputs
+[train.distill_opt.loss]
+type = "L1Loss"
+loss_weight = 1.0 # The weight of the distillation loss
+reduction = "mean"
+
+# Regular training options for the student
+[train.optim_g]
+type = "adan_sf"
+lr = 1e-3
+betas = [0.98, 0.92, 0.99]
+weight_decay = 0.01
+schedule_free = true
+warmup_steps = 2500
+
+[train.pixel_opt]
+type = "L1Loss"
+loss_weight = 1.0
+reduction = "mean"
+
+[logger]
+total_iter = 1000000
+save_checkpoint_freq = 5000
+use_tb_logger = true

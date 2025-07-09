@@ -56,7 +56,6 @@ class image(base):
 
         # Define the generator network using the (potentially modified) options
         self.net_g = build_network(network_g_opt)
-        # --- END of Quality-of-Life modification ---
         self.net_g = self.model_to_device(self.net_g)  # type: ignore[reportArgumentType,reportArgumentType,arg-type]
         if self.opt["path"].get("print_network", False) is True:
             self.print_network(self.net_g)
@@ -94,6 +93,27 @@ class image(base):
                 param_key,
                 self.opt["path"].get("strict_load_g", True),
             )
+
+        # Knowledge Distillation - Teacher Model
+        self.net_teacher = None
+        if self.is_train and self.opt.get("train", {}).get("distill_opt"):
+            logger.info("Knowledge Distillation is enabled. Initializing teacher network.")
+            distill_opt = self.opt["train"]["distill_opt"]
+            teacher_opt = {"type": distill_opt["teacher_type"], "scale": self.opt["scale"]}
+            self.net_teacher = build_network(teacher_opt)
+            self.net_teacher = self.model_to_device(self.net_teacher)
+            
+            # Load pre-trained teacher model
+            load_path_teacher = self.opt["path"].get("pretrain_network_teacher")
+            if load_path_teacher is None:
+                raise ValueError("Teacher model path 'pretrain_network_teacher' is required for Knowledge Distillation.")
+
+            self.load_network(self.net_teacher, load_path_teacher, strict=True)
+
+            # Freeze teacher network
+            self.net_teacher.eval()
+            for param in self.net_teacher.parameters():
+                param.requires_grad = False
 
         # load pretrained d
         load_path = self.opt["path"].get("pretrain_network_d", None)
@@ -230,6 +250,14 @@ class image(base):
             )
         else:
             self.cri_mssim = None
+            
+        # Knowledge Distillation Loss
+        if train_opt.get("distill_opt"):
+            self.cri_distill = build_loss(train_opt["distill_opt"]["loss"]).to(
+                self.device, non_blocking=True
+            )
+        else:
+            self.cri_distill = None
 
         # fdl perceptual loss
         if train_opt.get("fdl_opt"):
@@ -534,6 +562,15 @@ class image(base):
         return self.output, self.gt
 
     def closure(self, current_iter: int):
+        """Forward-backward closure function.
+        - If `use_amp` is enabled, this function is executed under `torch.cuda.amp.autocast()`.
+        - If `sam` is enabled, this function will be executed twice for the first and second steps.
+        """
+        # zero grads
+        if self.is_train and self.opt.get("train", {}).get("gan_opt"):
+            for p in self.net_d.parameters():  # type: ignore[reportAttributeAccessIssue,operator]
+                p.requires_grad = False
+                
         if self.net_d is not None:
             for p in self.net_d.parameters():  # type: ignore[reportAttributeAccessIssue,operator]
                 p.requires_grad = False
@@ -559,6 +596,11 @@ class image(base):
                 self.output = self.net_g(self.lq)  # type: ignore[reportCallIssue,operator]
             if self.clamp:
                 self.output = torch.clamp(self.output, 1 / 255, 1)
+                
+            # Knowledge Distillation forward pass
+            if self.net_teacher is not None:
+                with torch.no_grad():
+                    self.teacher_output = self.net_teacher(self.lq)
 
             # lq match
             if self.match_lq_colors:
@@ -781,32 +823,63 @@ class image(base):
         self.closure(current_iter)
 
         if (self.n_accumulated) % self.accum_iters == 0:
-            # step() for generator
+            # ---- SAM ----
             if self.sam and current_iter >= self.sam_init:
-                self.sam_optimizer_g.step(self.closure, current_iter)
+                # first forward-backward pass
+                # Need to explicitly set values for mypy
+                self.optimizer_g: Optimizer
+                self.gradscaler_g: torch.cuda.amp.GradScaler
+                if self.opt["use_amp"] is True:
+                    with torch.cuda.amp.autocast(enabled=True):
+                        self.closure(current_iter)
+                    self.gradscaler_g.scale(self.l_g_total).backward()  # type: ignore
+                else:
+                    self.closure(current_iter)
+                    self.l_g_total.backward()
+
+                self.optimizer_g.first_step(zero_grad=True)
+
+                # second forward-backward pass
+                if self.opt["use_amp"] is True:
+                    with torch.cuda.amp.autocast(enabled=True):
+                        self.closure(current_iter)
+                    self.gradscaler_g.scale(self.l_g_total).backward()  # type: ignore
+                else:
+                    self.closure(current_iter)
+                    self.l_g_total.backward()
+
+                self.optimizer_g.second_step(zero_grad=True)
+
+            # ---- NO-SAM ----
             else:
-                self.gradscaler_g.step(self.optimizer_g)  # type: ignore[reportFunctionMemberAccess,attr-defined]
-            # step() for discriminator
-            if self.net_d is not None:
-                self.gradscaler_d.step(self.optimizer_d)  # type: ignore[reportFunctionMemberAccess,attr-defined]
+                # run forward-backward
+                self.closure(current_iter)
+                # step() for generator
+                if self.opt["use_amp"] is True:
+                    self.gradscaler_g.step(self.optimizer_g)  # type: ignore[reportFunctionMemberAccess,attr-defined]
+                # step() for discriminator
+                elif self.opt["train"].get("gan_opt"):
+                    self.gradscaler_d.step(self.optimizer_d)  # type: ignore[reportFunctionMemberAccess,attr-defined]
+                else:
+                    self.optimizer_g.step()  # type: ignore[reportFunctionMemberAccess,attr-defined]
 
-            # zero generator grads
-            if self.sam and current_iter >= self.sam_init:
-                self.sam_optimizer_g.zero_grad(set_to_none=True)
-            else:
-                # update gradscaler
-                self.gradscaler_g.update()  # type: ignore[reportFunctionMemberAccess,attr-defined]
-                if self.net_d is not None:
-                    self.gradscaler_d.update()  # type: ignore[reportFunctionMemberAccess,attr-defined]
-                self.optimizer_g.zero_grad(set_to_none=True)
+                # zero generator grads
+                self.optimizer_g.zero_grad()  # type: ignore[reportFunctionMemberAccess,attr-defined]
 
-            # zero discriminator grads
-            if self.net_d is not None:
-                self.optimizer_d.zero_grad(set_to_none=True)
+                if self.opt["use_amp"] is True:
+                    # update gradscaler
+                    self.gradscaler_g.update()  # type: ignore[reportFunctionMemberAccess,attr-defined]
+                    if self.opt["train"].get("gan_opt"):
+                        self.gradscaler_d.update()  # type: ignore[reportFunctionMemberAccess,attr-defined]
 
-            if self.ema > 0:
+                # zero discriminator grads
+                if self.opt["train"].get("gan_opt"):
+                    self.optimizer_d.zero_grad()  # type: ignore[reportFunctionMemberAccess,attr-defined]
+
+            # ema
+            if self.opt.get("ema") is not None and self.ema != -1: # type: ignore
                 self.net_g_ema.update_parameters(self.net_g)  # type: ignore[reportArgumentType,arg-type]
-                if self.net_d is not None:
+                if self.opt.get("train", {}).get("gan_opt"):
                     self.net_d_ema.update_parameters(self.net_d)  # type: ignore[reportArgumentType,arg-type]
 
     def tile_val(self) -> Tensor:
