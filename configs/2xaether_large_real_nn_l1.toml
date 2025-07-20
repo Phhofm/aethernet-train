@@ -1,0 +1,66 @@
+name = "2xaether_large_real_nn_l1"
+model_type = "image"
+scale = 2
+use_amp = false
+bfloat16 = false
+fast_matmul = true
+
+[datasets.train]
+type = "paired"
+dataroot_gt = '/home/phips/Documents/dataset/PDM/OSISRD/v3/hr'
+dataroot_lq = '/home/phips/Documents/dataset/PDM/OSISRD/v3/x2_real_nn'
+patch_size = 32
+batch_size = 6
+
+[datasets.val]
+name = "val"
+type = "paired"
+dataroot_gt = '/home/phips/Documents/dataset/PDM/OSISRD/v3/validation/hr'
+dataroot_lq = '/home/phips/Documents/dataset/PDM/OSISRD/v3/validation/x2_real_nn'
+
+[val]
+val_freq = 5000
+[val.metrics.psnr]
+type = "calculate_psnr"
+[val.metrics.ssim]
+type = "calculate_ssim"
+[val.metrics.dists]
+type = "calculate_dists"
+better = "lower"
+[val.metrics.topiq]
+type = "calculate_topiq"
+
+[path]
+pretrain_network_g = '/home/phips/Documents/GitHub/aethernet-train/neosr/experiments/2xaether_large/models/net_g_105000.pth'
+
+[network_g]
+#type = "aether_tiny"
+#type = "aether_small"
+#type = "aether_medium"
+type = "aether_large"
+
+[train]
+enable_qat = false # the non-qat pretrain, best quality and stability for training from scratch
+grad_clip = true # even in FP32, certain data patches can cause the loss to spike momentarily. This hepls protect against exploding gradients.
+ema = 0.999 # use this for fp32 pretrain
+
+[train.optim_g]
+type = "adamw"
+lr = 2e-4 # high learning rate for exploration phase. allows the model to take large steps, explore the vast loss landscape, and rapidly converge to a high-quality solution state
+betas = [ 0.9, 0.99 ]
+weight_decay = 0
+
+[train.pixel_opt]
+type = "L1Loss"
+loss_weight = 1.0
+reduction = "mean"
+
+[train.scheduler]
+type = "MultiStepLR"
+milestones = [ 400000, 600000, 800000, 900000 ]
+gamma = 0.5
+
+[logger]
+total_iter = 1000000
+save_checkpoint_freq = 5000
+use_tb_logger = true
