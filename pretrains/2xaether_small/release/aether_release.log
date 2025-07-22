@@ -1,0 +1,31 @@
+2025-07-22 07:42:01,510 - INFO - === AetherNet Model Release Script ===
+2025-07-22 07:42:01,510 - INFO - PyTorch: 2.7.1+cu126, Device: cuda, Model: net_g_100000.pth
+2025-07-22 07:42:01,510 - INFO - 
+[1/4] Loading and analyzing checkpoint
+2025-07-22 07:42:01,600 - INFO - Scale: 2x, QAT: False, Validation sample: 154.png
+2025-07-22 07:42:01,600 - INFO - 
+[2/4] Initializing base model
+2025-07-22 07:42:01,640 - INFO - Detected Architecture: aether_small
+2025-07-22 07:42:01,647 - INFO - Base model loaded successfully.
+2025-07-22 07:42:01,647 - INFO - Validating base model...
+2025-07-22 07:42:02,637 - INFO - 
+[3/4] Converting models to different precisions
+2025-07-22 07:42:02,637 - INFO - 
+>> Creating FP32 model
+2025-07-22 07:42:02,637 - INFO - Attempt 1/3
+2025-07-22 07:42:03,134 - INFO - ✅ Created optimized FP32 model
+2025-07-22 07:42:03,155 - INFO - Saved FP32 model to: /home/phips/Documents/GitHub/aethernet-train/pretrains/2xaether_small/release/net_g_100000_aether_small_fp32.pth
+2025-07-22 07:42:03,155 - INFO - Attempt 1/3
+2025-07-22 07:42:04,262 - INFO - ✅ Exported and validated FP32 ONNX model
+2025-07-22 07:42:04,262 - INFO - 
+>> Creating FP16 model
+2025-07-22 07:42:04,263 - INFO - Attempt 1/3
+2025-07-22 07:42:04,845 - INFO - ✅ Created stable FP16 model
+2025-07-22 07:42:04,865 - INFO - Saved FP16 model to: /home/phips/Documents/GitHub/aethernet-train/pretrains/2xaether_small/release/net_g_100000_aether_small_fp16.pth
+2025-07-22 07:42:04,865 - INFO - Attempt 1/3
+2025-07-22 07:42:05,800 - INFO - ✅ Exported and validated FP16 ONNX model
+2025-07-22 07:42:05,800 - WARNING - 
+Skipping INT8 conversion: The provided checkpoint is not from QAT.
+2025-07-22 07:42:05,800 - INFO - 
+[4/4] Conversion complete.
+2025-07-22 07:42:05,800 - INFO - Results saved to: /home/phips/Documents/GitHub/aethernet-train/pretrains/2xaether_small/release

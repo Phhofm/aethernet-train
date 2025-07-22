@@ -1,0 +1,32 @@
+2025-07-04 16:39:11,897 - INFO - === AetherNet Model Release Script ===
+2025-07-04 16:39:11,897 - INFO - PyTorch: 2.7.1+cu128, Device: cuda, Model: net_g_220000.pth
+2025-07-04 16:39:11,897 - INFO - 
+[1/4] Loading and analyzing checkpoint
+2025-07-04 16:39:11,927 - INFO - Scale: 2x, QAT: False, Validation sample: 154.png
+2025-07-04 16:39:11,927 - INFO - 
+[2/4] Initializing base model
+2025-07-04 16:39:11,948 - INFO - Detected Architecture: aether_tiny
+2025-07-04 16:39:11,948 - INFO - Fusing model to match non-QAT fused checkpoint.
+2025-07-04 16:39:11,956 - INFO - Base model loaded successfully.
+2025-07-04 16:39:11,956 - INFO - Validating base model...
+2025-07-04 16:39:12,501 - INFO - 
+[3/4] Converting models to different precisions
+2025-07-04 16:39:12,501 - INFO - 
+>> Creating FP32 model
+2025-07-04 16:39:12,501 - INFO - Attempt 1/3
+2025-07-04 16:39:12,607 - INFO - ✅ Created optimized FP32 model
+2025-07-04 16:39:12,624 - INFO - Saved FP32 model to: /home/phips/Documents/GitHub/aethernet-train/neosr/experiments/2xaether_tiny/models/release/net_g_220000_aether_tiny_fp32.pth
+2025-07-04 16:39:12,624 - INFO - Attempt 1/3
+2025-07-04 16:39:13,667 - INFO - ✅ Exported and validated FP32 ONNX model
+2025-07-04 16:39:13,667 - INFO - 
+>> Creating FP16 model
+2025-07-04 16:39:13,667 - INFO - Attempt 1/3
+2025-07-04 16:39:13,930 - INFO - ✅ Created stable FP16 model
+2025-07-04 16:39:13,940 - INFO - Saved FP16 model to: /home/phips/Documents/GitHub/aethernet-train/neosr/experiments/2xaether_tiny/models/release/net_g_220000_aether_tiny_fp16.pth
+2025-07-04 16:39:13,940 - INFO - Attempt 1/3
+2025-07-04 16:39:15,120 - INFO - ✅ Exported and validated FP16 ONNX model
+2025-07-04 16:39:15,120 - WARNING - 
+Skipping INT8 conversion: The provided checkpoint is not from QAT.
+2025-07-04 16:39:15,120 - INFO - 
+[4/4] Conversion complete.
+2025-07-04 16:39:15,120 - INFO - Results saved to: /home/phips/Documents/GitHub/aethernet-train/neosr/experiments/2xaether_tiny/models/release

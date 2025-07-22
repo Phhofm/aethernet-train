@@ -1,9 +1,9 @@
 name = "2xaether_large"
 model_type = "image"
 scale = 2
-use_amp = true
-bfloat16 = true
-fast_matmul = true
+use_amp = false
+bfloat16 = false
+fast_matmul = false
 
 [datasets.train]
 type = "paired"
