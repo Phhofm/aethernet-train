@@ -1,0 +1,77 @@
+
+name = "2xaether_large_multiscale"
+model_type = "image"
+scale = 2
+use_amp = true
+bfloat16 = true
+fast_matmul = true
+#compile = true
+#manual_seed = 1024
+
+[datasets.train]
+type = "paired"
+dataroot_gt = '/home/phips/Documents/dataset/PDM/OSISRD/v3/hr'
+dataroot_lq = '/home/phips/Documents/dataset/PDM/OSISRD/v3/x2_multiscale'
+patch_size = 64
+batch_size = 6
+#accumulate = 1
+#augmentation = [ "none", "mixup", "cutmix", "resizemix", "cutblur" ]
+#aug_prob = [ 0.5, 0.1, 0.1, 0.1, 0.5 ]
+
+[datasets.val]
+name = "val"
+type = "paired"
+dataroot_gt = '/home/phips/Documents/dataset/PDM/OSISRD/v3/validation/hr'
+dataroot_lq = '/home/phips/Documents/dataset/PDM/OSISRD/v3/validation/x2'
+[val]
+val_freq = 5000
+#tile = 200
+[val.metrics.psnr]
+type = "calculate_psnr"
+[val.metrics.ssim]
+type = "calculate_ssim"
+[val.metrics.dists]
+type = "calculate_dists"
+better = "lower"
+[val.metrics.topiq]
+type = "calculate_topiq"
+
+[path]
+pretrain_network_g = '/home/phips/Documents/GitHub/aethernet-train/pretrains/2xaether_large/net_g_100000.pth'
+#pretrain_network_d = 'experiments\pretrain_d.pth'
+
+[network_g]
+#type = "aether_tiny"
+#type = "aether_small"
+#type = "aether_medium"
+type = "aether_large"
+
+[train]
+enable_qat = false # the non-qat pretrain, best quality and stability for training from scratch
+grad_clip = true # even in FP32, certain data patches can cause the loss to spike momentarily. This hepls protect against exploding gradients.
+ema = 0.999 # use this for fp32 pretrain
+
+[train.optim_g]
+type = "adan_sf"
+lr = 1e-3
+betas = [ 0.98, 0.92, 0.99 ]
+weight_decay = 0.01
+schedule_free = true
+warmup_steps = 1600
+
+#  losses
+[train.pixel_opt]
+type = "L1Loss"
+loss_weight = 1.0
+reduction = "mean"
+
+[train.consistency_opt]
+type = "consistency_loss"
+loss_weight = 1.0
+
+[logger]
+total_iter = 1000000
+save_checkpoint_freq = 5000
+use_tb_logger = true
+#save_tb_img = true
+#print_freq = 100
